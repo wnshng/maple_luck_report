@@ -1,0 +1,2 @@
+"""Maple Luck Report package."""
+
