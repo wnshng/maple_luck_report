@@ -254,6 +254,109 @@ def plot_starforce_stage_rate(
     return _bar_rate(plot_df, x_col, "success_rate", title, min_attempts=min_attempts, show_low_sample=show_low_sample)
 
 
+def plot_starforce_transition_rate(
+    df_summary: pd.DataFrame,
+    rate_col: str,
+    title: str,
+    *,
+    count_col: str,
+    gap_col: str,
+    min_attempts: int = 10,
+    show_low_sample: bool = True,
+    hide_zero_rate: bool = False,
+) -> go.Figure:
+    if df_summary is None or df_summary.empty or "transition_label" not in df_summary.columns or rate_col not in df_summary.columns:
+        return _empty_figure(f"{title} 데이터가 없습니다.")
+
+    plot_df = df_summary.copy()
+    if "attempts" not in plot_df.columns and "attempt_count" in plot_df.columns:
+        plot_df["attempts"] = plot_df["attempt_count"]
+    if "attempts" not in plot_df.columns:
+        return _empty_figure(f"{title} 데이터가 없습니다.")
+
+    plot_df["sample_note"] = plot_df["attempts"].map(lambda value: "표본 부족" if int(value) < min_attempts else "기준 충족")
+    if hide_zero_rate:
+        plot_df = plot_df[(plot_df[count_col].fillna(0) > 0) & (plot_df[rate_col].fillna(0) > 0)].copy()
+    if not show_low_sample:
+        plot_df = plot_df[plot_df["attempts"] >= min_attempts].copy()
+    if plot_df.empty:
+        return _empty_figure(f"{title} 데이터가 없습니다.")
+
+    def _clean_rate(value: object) -> float:
+        try:
+            numeric = float(value)
+        except Exception:
+            return 0.0
+        if abs(numeric) < 0.0001:
+            return 0.0
+        return numeric
+
+    def _format_rate_label(value: object) -> str:
+        cleaned = _clean_rate(value)
+        percent = cleaned * 100
+        if abs(percent) < 0.05:
+            return "0%"
+        return f"{percent:.1f}%"
+
+    def _format_gap_label(value: object) -> str:
+        cleaned = _clean_rate(value)
+        percent = cleaned * 100
+        if abs(percent) < 0.05:
+            return "+0.0%p"
+        return f"{percent:+.1f}%p"
+
+    plot_df["overall_gap_label"] = plot_df[gap_col].map(lambda value: _format_gap_label(value) if pd.notna(value) else "기준 없음")
+    plot_df["rate_percent"] = plot_df[rate_col] * 100
+    plot_df["rate_label"] = plot_df.apply(lambda row: f"{_format_rate_label(row[rate_col])} · n={int(row['attempts'])}", axis=1)
+
+    color = "#38BDF8" if rate_col == "success_rate" else "#F87171"
+    opacities = plot_df["attempts"].map(_opacity_for_attempts_bucket).tolist()
+    customdata = np.column_stack(
+        [
+            plot_df["transition_label"].to_numpy(),
+            plot_df["attempts"].to_numpy(),
+            plot_df[count_col].to_numpy(),
+            plot_df["rate_percent"].to_numpy(),
+            plot_df["overall_gap_label"].to_numpy(),
+            plot_df.get("confidence", pd.Series(["-"] * len(plot_df))).to_numpy(),
+            plot_df["sample_note"].to_numpy(),
+        ]
+    )
+
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                y=plot_df["transition_label"],
+                x=plot_df["rate_percent"],
+                orientation="h",
+                text=plot_df["rate_label"],
+                textposition="outside",
+                marker=dict(color=color, opacity=opacities),
+                customdata=customdata,
+                hovertemplate=(
+                    "전이 구간: %{customdata[0]}<br>"
+                    "시도 수: %{customdata[1]}<br>"
+                    f"{'성공 수' if rate_col == 'success_rate' else '파괴 수'}: %{{customdata[2]}}<br>"
+                    f"{'성공률' if rate_col == 'success_rate' else '파괴율'}: %{{customdata[3]:.1f}}%<br>"
+                    "전체 평균 대비: %{customdata[4]}<br>"
+                    "신뢰도: %{customdata[5]}<br>"
+                    "%{customdata[6]}<extra></extra>"
+                ),
+            )
+        ]
+    )
+    fig.update_layout(title=title, xaxis_title="확률 (%)", yaxis_title=None)
+    fig.update_yaxes(categoryorder="array", categoryarray=plot_df["transition_label"].tolist(), autorange="reversed")
+    max_rate = float(plot_df["rate_percent"].max()) if not plot_df.empty else 0.0
+    fig.update_xaxes(range=[0, max(8, max_rate * 1.22)])
+    fig = apply_chart_layout(_style_figure(fig), title, len(plot_df), orientation="h")
+    fig.update_layout(
+        height=max(360, min(720, len(plot_df) * 34 + 120)),
+        margin=dict(l=120, r=40, t=70, b=50),
+    )
+    return fig
+
+
 def plot_hourly_rate(
     hour_summary: pd.DataFrame,
     rate_col: str = "success_rate",
@@ -674,3 +777,17 @@ def _style_figure(fig: go.Figure) -> go.Figure:
         margin=dict(l=20, r=20, t=60, b=20),
     )
     return apply_plotly_theme(fig)
+
+
+def _opacity_for_attempts_bucket(value: object) -> float:
+    try:
+        attempts = int(value)
+    except Exception:
+        return 1.0
+    if attempts < 10:
+        return 0.25
+    if attempts < 30:
+        return 0.45
+    if attempts < 100:
+        return 0.8
+    return 1.0

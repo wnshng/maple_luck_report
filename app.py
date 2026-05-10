@@ -97,6 +97,7 @@ from src.visualizations import (
     plot_rate_heatmap,
     plot_reference_gap_bar,
     plot_starforce_stage_rate,
+    plot_starforce_transition_rate,
     plot_weekday_rate,
     set_plotly_theme_mode,
 )
@@ -226,7 +227,6 @@ def main() -> None:
     ]
     if admin_state.get("authorized"):
         tab_labels.append("운영 로그")
-
     tabs = st.tabs(tab_labels)
 
     with tabs[0]:
@@ -275,9 +275,6 @@ def _init_state() -> None:
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
-    if not st.session_state.get("_persisted_state_restored"):
-        _restore_persisted_app_state()
-        st.session_state["_persisted_state_restored"] = True
 
 
 def _sanitize_df_for_persistence(df: pd.DataFrame) -> pd.DataFrame:
@@ -301,6 +298,9 @@ def _sanitize_basic_cache_for_persistence(cache: dict[str, Any]) -> dict[str, An
 
 
 def _restore_persisted_app_state() -> None:
+    # Shared deployment environments must not restore another user's state
+    # from a server-side file. This helper is intentionally disabled by
+    # default and kept only for an explicit local-dev opt-in path.
     if not is_local_state_persistence_enabled():
         return
     try:
@@ -313,11 +313,6 @@ def _restore_persisted_app_state() -> None:
         for key in PERSISTED_APP_STATE_KEYS:
             if key in payload:
                 st.session_state[key] = payload[key]
-        if any(
-            isinstance(st.session_state.get(name), pd.DataFrame) and not st.session_state.get(name).empty
-            for name in ["cube_df", "potential_df", "starforce_df", "characters_df"]
-        ):
-            st.session_state["_restored_from_local_state"] = True
     except Exception:
         return
 
@@ -925,8 +920,6 @@ def _render_sidebar() -> dict[str, Any]:
 
         st.divider()
         available_start, available_end = get_default_two_year_range()
-        if st.session_state.get("_restored_from_local_state"):
-            st.caption("최근 불러온 데이터와 선택 상태를 이 브라우저에서 자동 복원했습니다.")
         st.caption("기본값은 오늘 기준 최근 2년입니다.")
         st.caption(f"현재 조회 가능 기간: {available_start} ~ {available_end}")
 
@@ -1173,7 +1166,6 @@ def _apply_loaded_history_result(result: dict[str, Any]) -> int:
     }
     st.session_state["last_sync_at"] = datetime.now()
     st.session_state["last_query_range"] = f"{start_str} ~ {end_str}"
-    st.session_state["_restored_from_local_state"] = False
     _persist_app_state()
 
     for message in loaded.messages:
@@ -1469,6 +1461,100 @@ def render_chart_card(title: str, fig, *, key: str, description: str | None = No
         st.plotly_chart(fig, width="stretch", key=key)
 
 
+def _render_star_transition_summary_block(
+    context: dict[str, Any],
+    df: pd.DataFrame,
+    *,
+    key_prefix: str,
+) -> None:
+    transition_summary = _sort_transition_frame(context["star_by_transition"], "transition_label")
+    if transition_summary.empty:
+        st.info("전이 구간별 스타포스 데이터를 만들기 어렵습니다.")
+        return
+
+    summary_cols = st.columns(2)
+    best_success_row = _best_ranked_row(
+        transition_summary,
+        "transition_label",
+        "스타포스 성공률",
+        min_attempts=context["controls"]["top_min_attempts"],
+        score_basis=context["controls"]["top_score_basis"],
+    )
+    best_destroy_row = _best_ranked_row(
+        transition_summary,
+        "transition_label",
+        "스타포스 파괴율",
+        min_attempts=context["controls"]["top_min_attempts"],
+        score_basis=context["controls"]["top_score_basis"],
+    )
+    with summary_cols[0]:
+        _render_summary_conclusion_card(
+            "과거 기록상 성공률이 가장 높게 관측된 전이 구간",
+            best_success_row,
+            label_col="transition_label",
+        )
+    with summary_cols[1]:
+        _render_summary_conclusion_card(
+            "과거 기록상 파괴율이 가장 낮게 관측된 전이 구간",
+            best_destroy_row,
+            label_col="transition_label",
+            lower_is_better=True,
+        )
+
+    success_fig = plot_starforce_transition_rate(
+        transition_summary,
+        "success_rate",
+        "스타포스 전이 구간별 성공률",
+        count_col="success_count",
+        gap_col="success_overall_gap_p",
+        min_attempts=context["controls"]["top_min_attempts"],
+        show_low_sample=context["controls"]["show_low_sample"],
+    )
+    add_vertical_average_line(success_fig, _bool_rate(df, "is_success"), "전체 평균", annotation_position="top left")
+    render_chart_card(
+        "스타포스 전이 구간별 성공률",
+        success_fig,
+        key=f"{key_prefix}_transition_success_chart",
+        description="성공률은 높을수록 좋은 지표입니다.",
+    )
+
+    include_zero_destroy = st.checkbox(
+        "0% 구간 포함",
+        value=False,
+        key=f"{key_prefix}_transition_include_zero_destroy",
+    )
+    transition_destroy = transition_summary.copy()
+    if not include_zero_destroy:
+        transition_destroy = transition_destroy[
+            (transition_destroy["destroy_count"].fillna(0) > 0)
+            & (transition_destroy["destroy_rate"].fillna(0) > 0)
+        ].copy()
+
+    if transition_destroy.empty:
+        st.info("기준기간 내 파괴가 발생한 전이 구간이 없습니다.")
+    else:
+        destroy_fig = plot_starforce_transition_rate(
+            transition_destroy,
+            "destroy_rate",
+            "스타포스 전이 구간별 파괴율",
+            count_col="destroy_count",
+            gap_col="destroy_overall_gap_p",
+            min_attempts=context["controls"]["top_min_attempts"],
+            show_low_sample=context["controls"]["show_low_sample"],
+        )
+        add_vertical_average_line(destroy_fig, _bool_rate(df, "is_destroyed"), "전체 평균", annotation_position="top left")
+        render_chart_card(
+            "스타포스 전이 구간별 파괴율",
+            destroy_fig,
+            key=f"{key_prefix}_transition_destroy_chart",
+            description="파괴율은 낮을수록 좋은 지표입니다.",
+        )
+
+    st.caption("시도 수가 적은 구간은 연하게 표시되며, 결론 카드와 TOP 랭킹에서는 최소 시도 수 기준을 만족한 항목만 사용합니다.")
+    if not include_zero_destroy:
+        st.caption("파괴율 그래프는 기본적으로 파괴가 발생한 구간만 표시합니다. 0% 구간까지 보려면 ‘0% 구간 포함’을 선택하세요.")
+
+
 def _render_overview_tab(context: dict[str, Any]) -> None:
     _log_tab_view_once("종합 요약")
     render_section_header("종합 요약", "선택된 캐릭터의 최근 2년 기록을 기준으로 잠재능력/큐브와 스타포스 결과를 한눈에 정리합니다.")
@@ -1537,9 +1623,7 @@ def _render_overview_tab(context: dict[str, Any]) -> None:
 def _render_day_of_month_tab(context: dict[str, Any]) -> None:
     _log_tab_view_once("일자별 분석")
     render_section_header("일자별 분석", "기준기간 동안 같은 일자끼리 묶어 비교합니다. 예: 2월 9일, 3월 9일, 4월 9일은 모두 9일로 집계됩니다.")
-
     cube_tab, star_tab = st.tabs(["잠재능력/큐브", "스타포스"])
-
     with cube_tab:
         _render_cube_day_of_month_section(context)
     with star_tab:
@@ -1549,7 +1633,6 @@ def _render_day_of_month_tab(context: dict[str, Any]) -> None:
 def _render_hour_tab(context: dict[str, Any]) -> None:
     _log_tab_view_once("시간별 분석")
     render_section_header("시간별 분석", "0시~23시 기준으로 비교하며, 시간대 분석은 새벽/오전/오후/저녁 구간으로 함께 봅니다.")
-
     cube_tab, star_tab = st.tabs(["잠재능력/큐브", "스타포스"])
     with cube_tab:
         _render_cube_hour_section(context)
@@ -1560,7 +1643,6 @@ def _render_hour_tab(context: dict[str, Any]) -> None:
 def _render_weekday_tab(context: dict[str, Any]) -> None:
     _log_tab_view_once("요일별 분석")
     render_section_header("요일별 분석", "월요일~일요일 기록을 묶어 비교한 결과입니다. 표본 수가 적은 요일은 참고용으로 해석해야 합니다.")
-
     cube_tab, star_tab = st.tabs(["잠재능력/큐브", "스타포스"])
     with cube_tab:
         _render_cube_weekday_section(context)
@@ -1952,7 +2034,12 @@ def _render_star_day_of_month_section(context: dict[str, Any]) -> None:
         score_basis=context["controls"]["top_score_basis"],
     )
     title = "과거 기록상 성공률이 가장 높게 관측된 일자" if metric_label == "스타포스 성공률" else "과거 기록상 파괴율이 가장 낮게 관측된 일자"
-    _render_summary_conclusion_card(title, best_row, label_col="day_of_month_label")
+    _render_summary_conclusion_card(
+        title,
+        best_row,
+        label_col="day_of_month_label",
+        lower_is_better=metric_label == "스타포스 파괴율",
+    )
     if best_row is not None:
         st.info(make_day_of_month_insight_text(best_row) + " 이는 같은 일자 데이터를 묶어 계산한 결과입니다.")
 
@@ -2114,7 +2201,12 @@ def _render_star_hour_section(context: dict[str, Any]) -> None:
         score_basis=context["controls"]["top_score_basis"],
     )
     title = "과거 기록상 성공률이 가장 높게 관측된 시간" if metric_label == "스타포스 성공률" else "과거 기록상 파괴율이 가장 낮게 관측된 시간"
-    _render_summary_conclusion_card(title, best_row, label_col="hour_label")
+    _render_summary_conclusion_card(
+        title,
+        best_row,
+        label_col="hour_label",
+        lower_is_better=metric_label == "스타포스 파괴율",
+    )
     if best_row is not None:
         st.info(make_hour_insight_text(best_row) + " 단, 과거 기록 기반 분석이므로 향후 결과를 보장하지 않습니다.")
 
@@ -2173,6 +2265,7 @@ def _render_star_hour_section(context: dict[str, Any]) -> None:
             "attempts",
         )
         if not transition_hour_df.empty:
+            _render_star_transition_summary_block(context, df, key_prefix="star_hour")
             transition_hour_df["_transition_sort"] = transition_hour_df["starforce_transition"].map(parse_transition_start)
             transition_hour_df = transition_hour_df.sort_values(["_transition_sort", "starforce_transition", "hour_label"]).drop(columns="_transition_sort")
             st.plotly_chart(
@@ -2376,7 +2469,12 @@ def _render_star_weekday_section(context: dict[str, Any]) -> None:
         score_basis=context["controls"]["top_score_basis"],
     )
     title = "과거 기록상 성공률이 가장 높게 관측된 요일" if metric_label == "스타포스 성공률" else "과거 기록상 파괴율이 가장 낮게 관측된 요일"
-    _render_summary_conclusion_card(title, best_row, label_col="weekday_kr")
+    _render_summary_conclusion_card(
+        title,
+        best_row,
+        label_col="weekday_kr",
+        lower_is_better=metric_label == "스타포스 파괴율",
+    )
     if best_row is not None:
         st.info(make_weekday_insight_text(best_row) + " 단, 과거 기록 기반 분석이므로 향후 결과를 보장하지 않습니다.")
 
@@ -2396,38 +2494,51 @@ def _render_star_weekday_section(context: dict[str, Any]) -> None:
 
     analysis_mode = st.radio("스타포스 분석 단위", ["구간별", "전이 구간별", "공식 성공률 그룹별"], horizontal=True, key="star_analysis_mode")
     if analysis_mode == "구간별":
-        range_cols = st.columns(2)
-        _plot_with_baseline(
-            range_cols[0],
-            plot_starforce_stage_rate(context["star_by_range"].rename(columns={"starforce_range": "before_starforce"}), "스타포스 구간별 성공률", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
-            _bool_rate(df, "is_success"),
-            "star_range_success_chart",
+        range_weekday_df = add_confidence(
+            _group_rate_summary(df, ["weekday_kr", "starforce_range"], "is_success", "success_rate"),
+            "attempts",
         )
-        _plot_with_baseline(
-            range_cols[1],
-            plot_item_rate(context["star_by_range"].rename(columns={"starforce_range": "item_name"}), "destroy_rate", "스타포스 구간별 파괴율", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
-            _bool_rate(df, "is_destroyed"),
-            "star_range_destroy_chart",
-        )
+        if not range_weekday_df.empty:
+            st.plotly_chart(
+                plot_rate_heatmap(
+                    range_weekday_df,
+                    x_col="weekday_kr",
+                    y_col="starforce_range",
+                    rate_col="success_rate",
+                    title="요일별 스타포스 구간별 성공률",
+                    x_order=WEEKDAY_ORDER,
+                ),
+                width="stretch",
+                key="star_weekday_range_heatmap",
+            )
+        else:
+            st.info("요일별 스타포스 구간별 성공률 데이터를 만들기 어렵습니다.")
     elif analysis_mode == "전이 구간별":
-        transition_success = _sort_transition_frame(context["star_by_transition"], "transition_label")
-        transition_destroy = _sort_transition_frame(
-            add_confidence(_group_rate_summary(df, ["starforce_transition"], "is_destroyed", "destroy_rate"), "attempts").rename(columns={"starforce_transition": "transition_label"}),
-            "transition_label",
+        transition_weekday_df = add_confidence(
+            _group_rate_summary(df, ["weekday_kr", "starforce_transition"], "is_success", "success_rate"),
+            "attempts",
         )
-        transition_cols = st.columns(2)
-        _plot_with_baseline(
-            transition_cols[0],
-            plot_item_rate(transition_success.rename(columns={"transition_label": "item_name"}), "success_rate", "전이 구간별 성공률", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
-            _bool_rate(df, "is_success"),
-            "star_transition_success_chart",
-        )
-        _plot_with_baseline(
-            transition_cols[1],
-            plot_item_rate(transition_destroy.rename(columns={"transition_label": "item_name"}), "destroy_rate", "전이 구간별 파괴율", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
-            _bool_rate(df, "is_destroyed"),
-            "star_transition_destroy_chart",
-        )
+        if not transition_weekday_df.empty:
+            _render_star_transition_summary_block(context, df, key_prefix="star_weekday")
+            transition_weekday_df["_transition_sort"] = transition_weekday_df["starforce_transition"].map(parse_transition_start)
+            transition_weekday_df = transition_weekday_df.sort_values(
+                ["_transition_sort", "starforce_transition", "weekday_kr"],
+                na_position="last",
+            ).drop(columns="_transition_sort")
+            st.plotly_chart(
+                plot_rate_heatmap(
+                    transition_weekday_df,
+                    x_col="weekday_kr",
+                    y_col="starforce_transition",
+                    rate_col="success_rate",
+                    title="요일별 스타포스 전이 구간별 성공률",
+                    x_order=WEEKDAY_ORDER,
+                ),
+                width="stretch",
+                key="star_weekday_transition_heatmap",
+            )
+        else:
+            st.info("요일별 스타포스 전이 구간별 성공률 데이터를 만들기 어렵습니다.")
     else:
         probability_df = context["success_probability_groups"]
         if probability_df is None or probability_df.empty:
@@ -2866,12 +2977,17 @@ def _render_summary_conclusion_card(
     row: pd.Series | None,
     *,
     label_col: str,
+    lower_is_better: bool = False,
 ) -> None:
     if row is None:
         st.info(f"{title}: 표본 기준을 만족하는 항목이 없습니다.")
         return
     theme_mode = st.session_state.get("resolved_theme_mode", "light")
-    gap_variant = "success" if float(row.get("overall_gap_p", 0) or 0) >= 0 else "danger"
+    overall_gap = float(row.get("overall_gap_p", 0) or 0)
+    is_positive_gap = overall_gap >= 0
+    if lower_is_better:
+        is_positive_gap = overall_gap <= 0
+    gap_variant = "success" if is_positive_gap else "danger"
     chips = [
         render_metric_chip("보정률", format_percent(row["adjusted_rate"]), theme_mode, "accent"),
         render_metric_chip("전체 평균 대비", format_gap_percent(row["overall_gap_p"]), theme_mode, gap_variant),
@@ -2949,7 +3065,13 @@ def add_average_line(fig, avg_value: float | None, label: str) -> None:
     )
 
 
-def add_vertical_average_line(fig, avg_value: float | None, label: str) -> None:
+def add_vertical_average_line(
+    fig,
+    avg_value: float | None,
+    label: str,
+    *,
+    annotation_position: str = "top right",
+) -> None:
     if avg_value is None or pd.isna(avg_value):
         return
     theme_mode = st.session_state.get("resolved_theme_mode", "light")
@@ -2964,7 +3086,7 @@ def add_vertical_average_line(fig, avg_value: float | None, label: str) -> None:
         line_dash="dot",
         line_color=line_color,
         annotation_text=f"{label} {avg_value * 100:.1f}%",
-        annotation_position="top right",
+        annotation_position=annotation_position,
     )
 
 
