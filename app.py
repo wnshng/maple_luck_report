@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import pickle
 import time
@@ -22,6 +23,7 @@ from src.analytics.logger import (
 from src.analytics.storage import init_analytics_db, is_analytics_enabled
 from src.auth import get_nexon_login_guide
 from src.config import (
+    PARALLEL_HISTORY_FETCH_WORKERS,
     ROOT_DIR,
     clamp_date_range,
     ensure_data_dirs,
@@ -1003,11 +1005,11 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
     )
 
     try:
-        client = NexonMapleClient(controls["api_key"])
         log_event("api_key_validation_success", page_name="data_fetch")
         total_records = 0
         success_types: list[str] = []
         failed_types: list[str] = []
+        fetch_plans: list[tuple[str, str, str]] = []
         for data_type in selected_types:
             start_date, end_date = controls["start_date"], controls["end_date"]
             if controls["auto_clamp"]:
@@ -1021,14 +1023,34 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
             if start_date > end_date:
                 continue
 
-            try:
-                total_records += _load_history(client, data_type, start_date.isoformat(), end_date.isoformat())
-                success_types.append(data_type)
-            except Exception as exc:
-                failed_types.append(data_type)
-                label = {"cube": "큐브", "potential": "잠재능력 재설정", "starforce": "스타포스"}[data_type]
-                st.sidebar.error(f"{label} 데이터를 불러오는 중 오류가 발생했습니다: {exc}")
-                log_error(f"{data_type}_fetch_failed", exc, page_name="sidebar")
+            fetch_plans.append((data_type, start_date.isoformat(), end_date.isoformat()))
+
+        if not fetch_plans:
+            st.sidebar.warning("조회할 수 있는 기간이 없습니다. 날짜 설정을 확인해 주세요.")
+            return
+
+        progress = st.sidebar.progress(0.0, text="기록을 준비하는 중입니다...")
+        completed = 0
+        max_workers = min(PARALLEL_HISTORY_FETCH_WORKERS, len(fetch_plans))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(_fetch_history_job, controls["api_key"], data_type, start_str, end_str): (data_type, start_str, end_str)
+                for data_type, start_str, end_str in fetch_plans
+            }
+            for future in as_completed(future_map):
+                data_type, start_str, end_str = future_map[future]
+                try:
+                    result = future.result()
+                    total_records += _apply_loaded_history_result(result)
+                    success_types.append(data_type)
+                except Exception as exc:
+                    failed_types.append(data_type)
+                    label = {"cube": "큐브", "potential": "잠재능력 재설정", "starforce": "스타포스"}[data_type]
+                    st.sidebar.error(f"{label} 데이터를 불러오는 중 오류가 발생했습니다: {exc}")
+                    log_error(f"{data_type}_fetch_failed", exc, page_name="sidebar")
+                completed += 1
+                progress.progress(completed / len(fetch_plans), text=f"기록 불러오기 진행 중... {completed}/{len(fetch_plans)}")
+        progress.empty()
         elapsed_ms = round((time.perf_counter() - fetch_started_at) * 1000, 2)
         if success_types:
             log_event(
@@ -1071,41 +1093,55 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
         log_error("data_fetch_failed", exc, page_name="sidebar")
 
 
-def _load_history(client: NexonMapleClient, data_type: str, start_str: str, end_str: str) -> int:
+def _fetch_history_job(api_key: str, data_type: str, start_str: str, end_str: str) -> dict[str, Any]:
+    client = NexonMapleClient(api_key)
+    if data_type == "cube":
+        loaded = fetch_cube_history_dataframe(client, start_str, end_str)
+    elif data_type == "potential":
+        loaded = fetch_potential_history_dataframe(client, start_str, end_str)
+    else:
+        loaded = fetch_starforce_history_dataframe(client, start_str, end_str)
+    return {
+        "data_type": data_type,
+        "start_str": start_str,
+        "end_str": end_str,
+        "loaded": loaded,
+        "debug_info": dict(client.last_debug_info),
+    }
+
+
+def _apply_loaded_history_result(result: dict[str, Any]) -> int:
+    data_type = result["data_type"]
+    start_str = result["start_str"]
+    end_str = result["end_str"]
+    loaded = result["loaded"]
+    debug_info = result["debug_info"]
     labels = {"cube": "큐브", "potential": "잠재능력 재설정", "starforce": "스타포스"}
-    with st.spinner(f"{labels[data_type]} 히스토리를 수집하는 중입니다..."):
-        if data_type == "cube":
-            loaded = fetch_cube_history_dataframe(client, start_str, end_str)
-        elif data_type == "potential":
-            loaded = fetch_potential_history_dataframe(client, start_str, end_str)
+    st.session_state[f"{data_type}_df"] = loaded.dataframe
+    st.session_state["api_debug"][data_type] = {
+        **debug_info,
+        "data_type": data_type,
+        "query_start_date": start_str,
+        "query_end_date": end_str,
+        "record_count": len(loaded.raw_records),
+        "raw_records_preview": loaded.raw_records[:3],
+    }
+    st.session_state["last_sync_at"] = datetime.now()
+    st.session_state["last_query_range"] = f"{start_str} ~ {end_str}"
+    st.session_state["_restored_from_local_state"] = False
+    _persist_app_state()
+
+    for message in loaded.messages:
+        st.sidebar.info(message)
+
+    if data_type == "starforce":
+        if loaded.raw_records:
+            st.sidebar.success(f"스타포스 records 수: {len(loaded.raw_records):,}건")
         else:
-            loaded = fetch_starforce_history_dataframe(client, start_str, end_str)
+            st.sidebar.warning("조회된 스타포스 기록이 없습니다. 해당 기간에 기록이 없거나 확률 정보 반영 전일 수 있습니다.")
 
-        st.session_state[f"{data_type}_df"] = loaded.dataframe
-        st.session_state["api_debug"][data_type] = {
-            **client.last_debug_info,
-            "data_type": data_type,
-            "query_start_date": start_str,
-            "query_end_date": end_str,
-            "record_count": len(loaded.raw_records),
-            "raw_records_preview": loaded.raw_records[:3],
-        }
-        st.session_state["last_sync_at"] = datetime.now()
-        st.session_state["last_query_range"] = f"{start_str} ~ {end_str}"
-        st.session_state["_restored_from_local_state"] = False
-        _persist_app_state()
-
-        for message in loaded.messages:
-            st.sidebar.info(message)
-
-        if data_type == "starforce":
-            if loaded.raw_records:
-                st.sidebar.success(f"스타포스 records 수: {len(loaded.raw_records):,}건")
-            else:
-                st.sidebar.warning("조회된 스타포스 기록이 없습니다. 해당 기간에 기록이 없거나 확률 정보 반영 전일 수 있습니다.")
-
-        st.sidebar.success(f"{labels[data_type]} 데이터를 화면 분석용으로 불러왔습니다.")
-        return len(loaded.raw_records)
+    st.sidebar.success(f"{labels[data_type]} 데이터를 화면 분석용으로 불러왔습니다.")
+    return len(loaded.raw_records)
 
 
 def _build_context(controls: dict[str, Any]) -> dict[str, Any]:

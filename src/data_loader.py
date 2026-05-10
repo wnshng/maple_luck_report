@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -7,7 +8,7 @@ from typing import Callable
 
 import pandas as pd
 
-from .config import CACHE_BYPASS_RECENT_DAYS, RAW_DATA_DIR
+from .config import CACHE_BYPASS_RECENT_DAYS, EXACT_CACHE_TTL_SECONDS, RAW_DATA_DIR
 from .nexon_client import NexonMapleClient
 from .preprocess import (
     normalize_cube_history,
@@ -168,10 +169,10 @@ def _fetch_history_dataframe_with_cache(
 
 
 def _load_exact_cached_history(kind: str, start_date: str, end_date: str) -> LoadedHistory | None:
-    if not _can_use_exact_cache(end_date):
+    raw_path = raw_json_path(kind, start_date, end_date, RAW_DATA_DIR)
+    if not _can_use_exact_cache(raw_path, end_date):
         return None
 
-    raw_path = raw_json_path(kind, start_date, end_date, RAW_DATA_DIR)
     raw_records = load_json_if_exists(raw_path)
     if not isinstance(raw_records, list):
         return None
@@ -213,8 +214,20 @@ def _date_range_length(start_date: str, end_date: str) -> int:
     return (end - start).days + 1
 
 
-def _can_use_exact_cache(end_date: str) -> bool:
-    return _parse_date(end_date) < date.today()
+def _can_use_exact_cache(raw_path: Path, end_date: str) -> bool:
+    target_end = _parse_date(end_date)
+    today = date.today()
+    if target_end < today:
+        return True
+    if target_end > today:
+        return False
+    if not raw_path.exists():
+        return False
+    try:
+        age_seconds = max(0.0, datetime.now().timestamp() - os.path.getmtime(raw_path))
+    except OSError:
+        return False
+    return age_seconds <= EXACT_CACHE_TTL_SECONDS
 
 
 def _can_use_daily_cache(target_date: date) -> bool:
