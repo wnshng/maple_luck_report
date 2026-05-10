@@ -1005,11 +1005,25 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
         properties={"target_type": "all", "date_range_days": date_range_days},
     )
 
+    loading_placeholder = st.empty()
+    result_placeholder = st.empty()
+
     try:
         log_event("api_key_validation_success", page_name="data_fetch")
         total_records = 0
         success_types: list[str] = []
         failed_types: list[str] = []
+        labels = {"cube": "큐브", "potential": "잠재능력 재설정", "starforce": "스타포스"}
+
+        with loading_placeholder.container(border=True):
+            st.markdown("### 전체 기록을 불러오는 중입니다")
+            st.caption("기간이 길수록 시간이 걸릴 수 있습니다. 불러오는 동안 이 화면에서 진행 상태를 확인할 수 있습니다.")
+            phase_placeholder = st.empty()
+            detail_placeholder = st.empty()
+            progress = st.progress(0.02, text="조회 준비 중입니다...")
+
+        phase_placeholder.markdown("**1단계 · 조회 기간을 점검하는 중입니다**")
+        detail_placeholder.caption("데이터 종류별 조회 가능 기간을 확인하고 있습니다.")
         fetch_plans: list[tuple[str, str, str]] = []
         for data_type in selected_types:
             start_date, end_date = controls["start_date"], controls["end_date"]
@@ -1027,10 +1041,13 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
             fetch_plans.append((data_type, start_date.isoformat(), end_date.isoformat()))
 
         if not fetch_plans:
+            loading_placeholder.empty()
             st.sidebar.warning("조회할 수 있는 기간이 없습니다. 날짜 설정을 확인해 주세요.")
             return
 
-        progress = st.sidebar.progress(0.0, text="기록을 준비하는 중입니다...")
+        phase_placeholder.markdown("**2단계 · API 호출을 시작합니다**")
+        detail_placeholder.caption("잠재능력/큐브와 스타포스 기록을 병렬로 요청하고 있습니다.")
+        progress.progress(0.08, text="기록 조회를 시작합니다...")
         completed = 0
         max_workers = min(PARALLEL_HISTORY_FETCH_WORKERS, len(fetch_plans))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1044,15 +1061,29 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
                     result = future.result()
                     total_records += _apply_loaded_history_result(result)
                     success_types.append(data_type)
+                    detail_placeholder.caption(
+                        f"{labels[data_type]} 데이터를 불러왔습니다. {completed + 1}/{len(fetch_plans)} 단계 반영 중입니다."
+                    )
                 except Exception as exc:
                     failed_types.append(data_type)
-                    label = {"cube": "큐브", "potential": "잠재능력 재설정", "starforce": "스타포스"}[data_type]
-                    st.sidebar.error(f"{label} 데이터를 불러오는 중 오류가 발생했습니다: {exc}")
+                    st.sidebar.error(f"{labels[data_type]} 데이터를 불러오는 중 오류가 발생했습니다: {exc}")
+                    detail_placeholder.caption(
+                        f"{labels[data_type]} 데이터는 실패했지만, 다른 기록은 계속 불러오고 있습니다."
+                    )
                     log_error(f"{data_type}_fetch_failed", exc, page_name="sidebar")
                 completed += 1
-                progress.progress(completed / len(fetch_plans), text=f"기록 불러오기 진행 중... {completed}/{len(fetch_plans)}")
-        progress.empty()
+                phase_placeholder.markdown(
+                    f"**3단계 · 화면 분석용 데이터로 반영 중입니다**  \n{completed}/{len(fetch_plans)} 종류를 처리했습니다."
+                )
+                progress.progress(
+                    min(0.08 + (completed / len(fetch_plans)) * 0.84, 0.95),
+                    text=f"기록 불러오기 진행 중... {completed}/{len(fetch_plans)}",
+                )
         elapsed_ms = round((time.perf_counter() - fetch_started_at) * 1000, 2)
+        phase_placeholder.markdown("**4단계 · 마무리 중입니다**")
+        detail_placeholder.caption("불러온 기록을 정리하고 화면에 반영하고 있습니다.")
+        progress.progress(1.0, text="전체 기록 불러오기가 완료되었습니다.")
+        loading_placeholder.empty()
         if success_types:
             log_event(
                 "data_fetch_success",
@@ -1065,6 +1096,9 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
                     "failed_types": failed_types,
                 },
             )
+            result_placeholder.success(
+                f"전체 기록 불러오기가 완료되었습니다. 성공 {len(success_types)}종류, 실패 {len(failed_types)}종류, 총 {total_records:,}건을 반영했습니다."
+            )
         if failed_types and success_types:
             st.sidebar.warning("일부 기록만 불러왔습니다. 성공한 데이터 기준으로 분석을 계속합니다.")
         if not success_types:
@@ -1073,8 +1107,10 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
                 page_name="sidebar",
                 properties={"error_type": "all_fetch_failed", "target_type": "all"},
             )
+            loading_placeholder.empty()
             st.sidebar.error("전체 기록을 불러오지 못했습니다. 기간 또는 API 상태를 확인해 주세요.")
     except (NexonAPIError, RuntimeError, ValueError) as exc:
+        loading_placeholder.empty()
         st.sidebar.error(str(exc))
         if "API Key" in str(exc):
             log_event("api_key_validation_failed", page_name="data_fetch", properties={"reason": type(exc).__name__})
@@ -1085,6 +1121,7 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
         )
         log_error("data_fetch_failed", exc, page_name="sidebar")
     except Exception as exc:
+        loading_placeholder.empty()
         st.sidebar.error(f"예상하지 못한 오류가 발생했습니다: {exc}")
         log_event(
             "data_fetch_failed",
@@ -3083,6 +3120,11 @@ def _inject_style(theme_mode: str) -> None:
         border: 0 !important;
     }}
 
+    div[data-testid="stToolbar"] > *,
+    [data-testid="stToolbar"] > * {{
+        display: none !important;
+    }}
+
     [data-testid="collapsedControl"],
     [data-testid="stSidebarCollapsedControl"],
     button[kind="header"] {{
@@ -3097,6 +3139,23 @@ def _inject_style(theme_mode: str) -> None:
         background: var(--card-bg) !important;
         color: var(--text-primary) !important;
         box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18) !important;
+    }}
+
+    div[data-testid="stToolbar"] [data-testid="collapsedControl"],
+    div[data-testid="stToolbar"] [data-testid="stSidebarCollapsedControl"],
+    div[data-testid="stToolbar"] button[aria-label*="sidebar"],
+    div[data-testid="stToolbar"] button[title*="sidebar"],
+    div[data-testid="stToolbar"] button[aria-label*="Sidebar"],
+    div[data-testid="stToolbar"] button[title*="Sidebar"],
+    [data-testid="stToolbar"] [data-testid="collapsedControl"],
+    [data-testid="stToolbar"] [data-testid="stSidebarCollapsedControl"],
+    [data-testid="stToolbar"] button[aria-label*="sidebar"],
+    [data-testid="stToolbar"] button[title*="sidebar"],
+    [data-testid="stToolbar"] button[aria-label*="Sidebar"],
+    [data-testid="stToolbar"] button[title*="Sidebar"] {{
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
     }}
 
     [data-testid="collapsedControl"]:hover,
