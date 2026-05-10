@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import streamlit as st
 
+from src.analytics.posthog_client import track_posthog_event
 from src.analytics.storage import analytics_status, get_db_connection
 from src.config import ROOT_DIR
 
@@ -24,6 +25,8 @@ SENSITIVE_KEYS = {
     "ocid",
     "raw_payload",
     "response",
+    "raw_response",
+    "raw_records",
     "request_headers",
     "token",
     "password",
@@ -174,11 +177,15 @@ def _upsert_session_row() -> None:
 def log_event(event_name: str, page_name: str | None = None, properties: dict[str, Any] | None = None) -> None:
     try:
         enabled, _ = analytics_status()
+        sanitized = sanitize_log_payload(properties or {})
+        try:
+            track_posthog_event(event_name, sanitized)
+        except Exception:
+            pass
         if not enabled:
             return
         _upsert_session_row()
         metadata = _get_context_metadata()
-        sanitized = sanitize_log_payload(properties or {})
         with get_db_connection() as connection:
             connection.execute(
                 """
@@ -275,6 +282,16 @@ def log_error(
                 ),
             )
             connection.commit()
+        try:
+            track_posthog_event(
+                "error_occurred",
+                {
+                    "error_type": error_type,
+                    "page_name": page_name,
+                },
+            )
+        except Exception:
+            pass
         log_event(
             "error_occurred",
             page_name=page_name,

@@ -101,6 +101,7 @@ from src.visualizations import (
 
 
 NOTICE_TEXT = """
+- 운빨 리포트는 큐브·잠재능력·스타포스 기록을 과거 관측 기준으로 정리한 참고용 분석입니다.
 - 날짜별 분석은 특정 하루가 아니라 기준기간 동안 같은 일자를 묶은 분석입니다. 예: 2월 9일, 3월 9일, 4월 9일은 모두 9일로 집계합니다.
 - 시간별 분석은 0시~23시 기준, 요일별 분석은 월요일~일요일 기준으로 비교합니다.
 - 조건 조합 분석은 일자/요일/시간/큐브 타입/스타포스 구간/전이 구간을 조합한 과거 기록 비교입니다.
@@ -198,7 +199,7 @@ def main() -> None:
     _bootstrap_analytics()
 
     st.title("메이플 운빨 리포트")
-    st.caption("메이플스토리 큐브/잠재능력 재설정/스타포스 기록을 과거 관측 기준으로 정리하는 개인 분석 대시보드")
+    st.caption("최근 2년 큐브·잠재능력·스타포스 기록으로 내 운빨 패턴을 확인해보세요.")
 
     controls = _render_sidebar()
     set_plotly_theme_mode(controls["resolved_theme_mode"])
@@ -1364,7 +1365,7 @@ def render_character_profile_card(
     </div>
     <div class="maple-profile-content">
       <div class="maple-title-lg">{nickname}</div>
-      <div class="maple-text-secondary">과거 기록상 결과가 좋게 관측된 조건을 정리하는 개인 분석 대시보드</div>
+      <div class="maple-text-secondary">내 큐브·스타포스 기록으로 보는 과거 운빨 분석 리포트</div>
       <div class="maple-chip-row">{''.join(chips)}</div>
     </div>
   </div>
@@ -3358,9 +3359,9 @@ def _inject_style(theme_mode: str) -> None:
     }}
 
     .maple-profile-avatar {{
-        width: 164px;
-        height: 164px;
-        border-radius: 30px;
+        width: 190px;
+        height: 190px;
+        border-radius: 34px;
         background: radial-gradient(circle at 50% 28%, rgba(96, 165, 250, 0.92) 0%, rgba(30, 41, 59, 0.96) 72%);
         color: #F8FAFC;
         display: flex;
@@ -3378,14 +3379,14 @@ def _inject_style(theme_mode: str) -> None:
     }}
 
     .maple-profile-avatar-img {{
-        width: 300%;
-        height: 300%;
+        width: 185px;
+        height: 185px;
         object-fit: contain;
         display: block;
-        max-width: none;
-        max-height: none;
+        max-width: 185px;
+        max-height: 185px;
         padding: 0;
-        transform: translateY(10%) scale(1);
+        transform: translateY(6%);
         transform-origin: center center;
         image-rendering: auto;
     }}
@@ -3578,8 +3579,15 @@ def _inject_style(theme_mode: str) -> None:
         }}
 
         .maple-profile-avatar {{
-            width: 132px;
-            height: 132px;
+            width: 150px;
+            height: 150px;
+        }}
+
+        .maple-profile-avatar-img {{
+            width: 145px;
+            height: 145px;
+            max-width: 145px;
+            max-height: 145px;
         }}
 
         .maple-title-lg {{

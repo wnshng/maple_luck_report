@@ -12,8 +12,18 @@ from src.analytics.storage import analytics_status, get_db_connection
 from src.config import get_today_kst
 
 
+def _get_config_value(name: str, default: str | None = None) -> str | None:
+    try:
+        if name in st.secrets:
+            value = st.secrets.get(name)
+            return str(value) if value is not None else default
+    except Exception:
+        pass
+    return os.getenv(name, default)
+
+
 def render_admin_analytics_entry() -> dict[str, bool]:
-    admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
+    admin_password = str(_get_config_value("ADMIN_PASSWORD", "")).strip()
     query_admin = str(st.query_params.get("admin", "0")) == "1"
     state = {"enabled": False, "authorized": False}
 

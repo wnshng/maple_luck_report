@@ -51,6 +51,14 @@ def ensure_data_dirs() -> None:
 
 
 def get_env_api_key() -> str:
+    try:
+        import streamlit as st
+
+        if "NEXON_OPEN_API_KEY" in st.secrets:
+            value = st.secrets.get("NEXON_OPEN_API_KEY")
+            return str(value).strip() if value is not None else ""
+    except Exception:
+        pass
     load_dotenv(ROOT_DIR / ".env")
     return os.getenv("NEXON_OPEN_API_KEY", "").strip()
 

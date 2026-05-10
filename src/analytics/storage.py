@@ -5,6 +5,7 @@ import os
 import sqlite3
 from pathlib import Path
 
+import streamlit as st
 from dotenv import load_dotenv
 
 from src.analytics.schema import CREATE_TABLE_STATEMENTS
@@ -16,20 +17,28 @@ _ANALYTICS_READY = False
 _ANALYTICS_DISABLED_REASON: str | None = None
 
 
-def is_analytics_enabled() -> bool:
+def _get_config_value(name: str, default: str | None = None) -> str | None:
+    try:
+        if name in st.secrets:
+            value = st.secrets.get(name)
+            return str(value) if value is not None else default
+    except Exception:
+        pass
     load_dotenv(ROOT_DIR / ".env")
-    enabled = os.getenv("ENABLE_ANALYTICS", "true").strip().lower()
+    return os.getenv(name, default)
+
+
+def is_analytics_enabled() -> bool:
+    enabled = str(_get_config_value("ENABLE_ANALYTICS", "true")).strip().lower()
     return enabled not in {"0", "false", "no", "off"}
 
 
 def get_database_url() -> str | None:
-    load_dotenv(ROOT_DIR / ".env")
-    return os.getenv("DATABASE_URL")
+    return _get_config_value("DATABASE_URL")
 
 
 def get_sqlite_db_path() -> Path:
-    load_dotenv(ROOT_DIR / ".env")
-    configured = os.getenv("ANALYTICS_DB_PATH", "analytics.db").strip() or "analytics.db"
+    configured = str(_get_config_value("ANALYTICS_DB_PATH", "analytics.db")).strip() or "analytics.db"
     path = Path(configured)
     if not path.is_absolute():
         path = ROOT_DIR / path
@@ -86,4 +95,3 @@ def ensure_tables() -> None:
         for statement in CREATE_TABLE_STATEMENTS:
             connection.execute(statement)
         connection.commit()
-

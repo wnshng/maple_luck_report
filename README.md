@@ -14,7 +14,7 @@ Nexon Open API 기반으로 메이플스토리 큐브, 잠재능력 재설정, �
 ## 주요 기능
 
 - Nexon Open API Key 직접 입력 기반 데이터 조회
-- 큐브, 잠재능력 재설정, 스타포스, 전체 데이터 수집
+- 큐브, 잠재능력 재설정, 스타포스 전체 데이터 수집
 - 최근 2년 기준 조회 가능 기간 자동 계산 및 날짜 범위 자동 보정
 - 큐브/잠재능력:
   - 주요옵션 출현률
@@ -27,8 +27,6 @@ Nexon Open API 기반으로 메이플스토리 큐브, 잠재능력 재설정, �
   - 스타포스 구간별 / 전이별 / 요일별 / 시간대별 / 날짜별 비교
 - 과거 기록상 좋게 관측된 조건 TOP 5 / 아쉬웠던 조건 TOP 5
 - 날짜별로 좋게 관측된 날 / 아쉬웠던 날 TOP 5
-- 기준 확률 CSV가 있을 때 기준 확률 대비 차이 비교
-- CSV 업로드 기반 오프라인 재분석
 - 화면 안에서만 분석 결과 표시
 - API 디버그 탭 제공
 
@@ -39,7 +37,6 @@ Nexon Open API 기반으로 메이플스토리 큐브, 잠재능력 재설정, �
 - `시간별 분석`
 - `요일별 분석`
 - `조건 조합 TOP 5`
-- `기준 확률 비교`
 - `원본 데이터`
 - `API 디버그`
 
@@ -117,22 +114,11 @@ adjusted_score = gap_p * log(attempts + 1)
 - `next_cursor`
 - `starforce_history`
 
-## 기준 확률 비교
-
-기준 확률 CSV가 있으면 실제 관측률과 비교할 수 있습니다.
-
-예시 파일 위치:
-
-- `maplestory_reference/potential_probability_reference.csv`
-- `maplestory_reference/starforce_probability_reference.csv`
-
-CSV가 없어도 앱은 정상 동작하며, 기준 확률 비교 탭만 참고 정보 없이 표시됩니다.
-
 ## 화면 표시 원칙
 
 - 분석 결과는 Streamlit 화면 안에서 카드, 차트, DataFrame으로만 보여줍니다.
 - 이번 버전에서는 분석 결과 CSV나 Excel 파일을 생성하지 않습니다.
-- 원본 기록 CSV 업로드는 지원하지만, 분석 결과 다운로드 버튼은 제공하지 않습니다.
+- CSV 업로드 분석과 결과 다운로드 기능은 제공하지 않습니다.
 
 ## 설치 방법
 
@@ -155,17 +141,26 @@ streamlit run app.py
 
 ```bash
 NEXON_OPEN_API_KEY=발급받은_API_KEY
+ENABLE_ANALYTICS=true
+POSTHOG_API_KEY=
+POSTHOG_HOST=https://app.posthog.com
+APP_VERSION=1.0.0
 ```
 
 기본 동작은 Streamlit 사이드바의 API Key 입력이며, `.env`는 로컬 개발 편의를 위한 선택 사항입니다.
 
-## CSV 업로드 분석
+## Streamlit Cloud Secrets
 
-API 호출 없이 기존 CSV만으로도 분석할 수 있습니다.
+Streamlit Cloud에서는 `.env` 대신 `App -> Settings -> Secrets`에 아래 값을 넣을 수 있습니다.
 
-- 큐브 CSV 업로드
-- 잠재능력 재설정 CSV 업로드
-- 스타포스 CSV 업로드
+```toml
+ENABLE_ANALYTICS = "true"
+POSTHOG_API_KEY = "phc_xxxxxxxxx"
+POSTHOG_HOST = "https://app.posthog.com"
+APP_VERSION = "1.0.0"
+```
+
+PostHog API Key가 없으면 내부 SQLite 기반 analytics만 동작하고, PostHog 전송은 자동으로 비활성화됩니다.
 
 ## API 디버그 탭
 
@@ -188,7 +183,7 @@ API 호출 없이 기존 CSV만으로도 분석할 수 있습니다.
 - 실제 API 호출 날짜 수
 - 실패한 날짜 목록
 
-API Key 자체는 화면에 표시하지 않습니다.
+API Key 자체는 화면에 표시하지 않습니다. 운영 로그와 PostHog 전송에도 API Key 원문, 캐릭터명 원문, ocid 원문, raw API 응답과 원본 기록은 포함하지 않습니다.
 
 ## 주의사항
 
@@ -198,10 +193,10 @@ API Key 자체는 화면에 표시하지 않습니다.
 - 기준 확률 대비 높게 관측되었다는 사실이 향후 결과를 보장하지 않습니다.
 - 이 앱은 미래 성공을 예측하거나 보장하지 않습니다.
 - API Key는 저장하지 않으며, 사용자의 세션에서만 사용합니다.
+- PostHog를 사용할 경우에도 익명 사용자 ID 기준 이벤트만 전송하며, 민감한 원본 데이터는 전송하지 않습니다.
 
 ## 한계점
 
 - 전체 유저 평균 데이터는 제공되지 않으므로 개인 기록 내부 평균 비교가 중심입니다.
 - 직업 정보와 캐릭터 이미지는 Open API 응답에 따라 보강 가능하지만, 현재는 기록 데이터 중심으로 표시합니다.
-- 기준 확률 CSV가 없으면 기준 확률 비교는 제한됩니다.
 - 이벤트 달력, 추가적인 공식 확률표, 캐릭터 프로필 확장은 추후 개선 항목입니다.
