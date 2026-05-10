@@ -15,6 +15,14 @@ def save_raw_json(data: Any, path: str | Path) -> Path:
     return output_path
 
 
+def load_json_if_exists(path: str | Path) -> Any | None:
+    input_path = Path(path)
+    if not input_path.exists():
+        return None
+    with input_path.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
 def save_dataframe_csv(df: pd.DataFrame, path: str | Path) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,6 +41,9 @@ def raw_json_path(kind: str, start_date: str, end_date: str, raw_dir: str | Path
     return Path(raw_dir) / f"{kind}_history_{start_date}_{end_date}.json"
 
 
+def daily_raw_json_path(kind: str, target_date: str, raw_dir: str | Path) -> Path:
+    return Path(raw_dir) / "daily" / kind / f"{kind}_history_{target_date}.json"
+
+
 def processed_csv_path(kind: str, start_date: str, end_date: str, processed_dir: str | Path) -> Path:
     return Path(processed_dir) / f"{kind}_history_{start_date}_{end_date}.csv"
-

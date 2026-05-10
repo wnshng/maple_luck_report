@@ -3,7 +3,10 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+analytics.db
+analytics.db-*
+.app_state/
 data/raw/*.json
+data/raw/daily/
 data/processed/*.csv
 !.gitkeep
-

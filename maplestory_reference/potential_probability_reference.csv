@@ -1,0 +1,7 @@
+cube_type,metric_name,reference_rate,note
+블랙 큐브,major_option_rate,0.30,예시 기준 확률
+블랙 큐브,effective_option_rate,0.08,예시 기준 확률
+블랙 큐브,grade_up_rate,0.02,예시 기준 확률
+레드 큐브,major_option_rate,0.28,예시 기준 확률
+레드 큐브,effective_option_rate,0.06,예시 기준 확률
+레드 큐브,grade_up_rate,0.015,예시 기준 확률

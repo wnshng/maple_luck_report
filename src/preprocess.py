@@ -61,6 +61,7 @@ def normalize_cube_history(raw_records: list[dict[str, Any]]) -> pd.DataFrame:
                 record.get("after_additional_potential_option")
             ),
             "channel": _channel_value(record),
+            "raw_payload": _json_or_none(record),
         }
         rows.append(row)
 
@@ -104,6 +105,9 @@ def normalize_starforce_history(raw_records: list[dict[str, Any]]) -> pd.DataFra
             "before_starforce": before_starforce_count,
             "after_starforce": after_starforce_count,
             "target_starforce": before_starforce_count + 1 if pd.notna(before_starforce_count) else np.nan,
+            "transition_label": _transition_label(before_starforce_count),
+            "starforce_transition": _transition_label(before_starforce_count),
+            "starforce_range": _starforce_range(before_starforce_count),
             "is_success": is_success,
             "is_drop": is_drop,
             "is_destroyed": is_destroyed,
@@ -123,6 +127,7 @@ def normalize_starforce_history(raw_records: list[dict[str, Any]]) -> pd.DataFra
             "event_plus_value": first_event.get("plus_value") if first_event else None,
             "event_range": first_event.get("starforce_event_range") if first_event else None,
             "channel": None,
+            "raw_payload": _json_or_none(record),
         }
         rows.append(row)
 
@@ -146,6 +151,7 @@ def add_time_features(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     output["year"] = output["event_datetime"].dt.year
     output["month"] = output["event_datetime"].dt.month
     output["day"] = output["event_datetime"].dt.day
+    output["day_of_month"] = output["event_datetime"].dt.day
     output["weekday"] = output["event_datetime"].dt.weekday
     output["weekday_kr"] = output["weekday"].map(
         lambda value: WEEKDAY_KR[int(value)] if pd.notna(value) and 0 <= int(value) <= 6 else None
@@ -182,6 +188,12 @@ def prepare_uploaded_dataframe(df: pd.DataFrame, kind: str) -> pd.DataFrame:
             output["after_starforce"] = pd.to_numeric(output["after_starforce_count"], errors="coerce")
         if "target_starforce" not in output.columns and "before_starforce" in output.columns:
             output["target_starforce"] = output["before_starforce"] + 1
+        if "transition_label" not in output.columns and "before_starforce" in output.columns:
+            output["transition_label"] = output["before_starforce"].map(_transition_label)
+        if "starforce_transition" not in output.columns and "before_starforce" in output.columns:
+            output["starforce_transition"] = output["before_starforce"].map(_transition_label)
+        if "starforce_range" not in output.columns and "before_starforce" in output.columns:
+            output["starforce_range"] = output["before_starforce"].map(_starforce_range)
         if "item_upgrade_result" not in output.columns and "result_type" in output.columns:
             output["item_upgrade_result"] = output["result_type"]
 
@@ -343,6 +355,30 @@ def _channel_value(record: dict[str, Any]) -> Any:
     return _first_present(record, CHANNEL_KEYS)
 
 
+def _starforce_range(before_starforce: Any) -> str | None:
+    if before_starforce is None or pd.isna(before_starforce):
+        return None
+    value = int(before_starforce)
+    if 0 <= value <= 10:
+        return "0~10성"
+    if 11 <= value <= 15:
+        return "11~15성"
+    if 16 <= value <= 17:
+        return "16~17성"
+    if 18 <= value <= 20:
+        return "18~20성"
+    if value >= 21:
+        return "21성 이상"
+    return None
+
+
+def _transition_label(before_starforce: Any) -> str | None:
+    if before_starforce is None or pd.isna(before_starforce):
+        return None
+    value = int(before_starforce)
+    return f"{value}성→{value + 1}성"
+
+
 def _empty_cube_dataframe() -> pd.DataFrame:
     return pd.DataFrame(
         columns=[
@@ -363,6 +399,7 @@ def _empty_cube_dataframe() -> pd.DataFrame:
             "result_type",
             "is_grade_up",
             "channel",
+            "raw_payload",
         ]
     )
 
@@ -388,6 +425,8 @@ def _empty_starforce_dataframe() -> pd.DataFrame:
             "before_starforce",
             "after_starforce",
             "target_starforce",
+            "transition_label",
+            "starforce_range",
             "result_type",
             "is_success",
             "is_destroyed",
@@ -403,5 +442,6 @@ def _empty_starforce_dataframe() -> pd.DataFrame:
             "event_plus_value",
             "event_range",
             "channel",
+            "raw_payload",
         ]
     )

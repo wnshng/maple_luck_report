@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
@@ -22,7 +23,11 @@ STARFORCE_MIN_DATE = "2023-12-27"
 POTENTIAL_MIN_DATE = "2024-01-25"
 MAX_LOOKBACK_YEARS = 2
 DEFAULT_PAGE_SIZE = 1000
-REQUEST_SLEEP_SECONDS = 0.2
+REQUEST_SLEEP_SECONDS = 0.1
+MAX_REQUEST_RETRIES = 4
+RETRY_BACKOFF_BASE_SECONDS = 0.75
+MAX_RETRY_BACKOFF_SECONDS = 8.0
+CACHE_BYPASS_RECENT_DAYS = 1
 
 # Backward-compatible aliases for older modules/notebooks.
 NEXON_OPEN_API_BASE_URL = BASE_URL
@@ -81,7 +86,7 @@ def clamp_date_range(start_date: date, end_date: date, data_type: str) -> tuple[
 
 def get_available_date_range(data_type: str, today: date | None = None) -> tuple[date, date]:
     if today is None:
-        today = date.today()
+        today = get_today_kst()
 
     max_start_date = today - relativedelta(years=2) + timedelta(days=1)
     max_end_date = today
@@ -97,6 +102,22 @@ def get_available_date_range(data_type: str, today: date | None = None) -> tuple
         start_date = max_start_date
 
     return start_date, max_end_date
+
+
+def get_today_kst() -> date:
+    return datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
+def get_default_date_range_years(years: int = 2) -> tuple[date, date]:
+    end_date = get_today_kst()
+    start_date = _subtract_years(end_date, years) + timedelta(days=1)
+    if start_date > end_date:
+        start_date = end_date
+    return start_date, end_date
+
+
+def get_default_two_year_range() -> tuple[date, date]:
+    return get_default_date_range_years(2)
 
 
 def _data_type_label(data_type: str) -> str:

@@ -181,6 +181,10 @@ def summarize_starforce_by_hour_band(df: pd.DataFrame) -> pd.DataFrame:
     return _rate_summary(df.copy(), "hour_band", "is_success", "success_rate")
 
 
+def summarize_starforce_by_item(df: pd.DataFrame) -> pd.DataFrame:
+    return _rate_summary(df.copy(), "item_name", "is_success", "success_rate")
+
+
 def summarize_starforce_by_star_count(df: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "before_starforce",
@@ -217,6 +221,50 @@ def summarize_starforce_by_star_count(df: pd.DataFrame) -> pd.DataFrame:
     summary["success_rate"] = summary["success_count"] / summary["attempts"]
     summary["luck_score"] = summary["success_rate"].map(lambda rate: _relative_luck_score(rate, overall_rate))
     return summary[columns]
+
+
+def summarize_starforce_by_range(df: pd.DataFrame) -> pd.DataFrame:
+    return _rate_summary(df.copy(), "starforce_range", "is_success", "success_rate")
+
+
+def summarize_starforce_destroy_by_range(df: pd.DataFrame) -> pd.DataFrame:
+    return _rate_summary(df.copy(), "starforce_range", "is_destroyed", "destroy_rate")
+
+
+def summarize_starforce_by_range_and_hour_band(df: pd.DataFrame) -> pd.DataFrame:
+    return _multi_group_rate_summary(
+        df.copy(),
+        group_cols=["starforce_range", "hour_band"],
+        success_col="is_success",
+        rate_col="success_rate",
+    )
+
+
+def summarize_starforce_destroy_by_range_and_hour_band(df: pd.DataFrame) -> pd.DataFrame:
+    return _multi_group_rate_summary(
+        df.copy(),
+        group_cols=["starforce_range", "hour_band"],
+        success_col="is_destroyed",
+        rate_col="destroy_rate",
+    )
+
+
+def summarize_starforce_by_star_count_and_weekday(df: pd.DataFrame) -> pd.DataFrame:
+    return _multi_group_rate_summary(
+        df.copy(),
+        group_cols=["before_starforce", "weekday_kr"],
+        success_col="is_success",
+        rate_col="success_rate",
+    )
+
+
+def summarize_starforce_by_star_count_and_hour(df: pd.DataFrame) -> pd.DataFrame:
+    return _multi_group_rate_summary(
+        df.copy(),
+        group_cols=["before_starforce", "hour_label"],
+        success_col="is_success",
+        rate_col="success_rate",
+    )
 
 
 def get_best_weekday(
@@ -469,6 +517,36 @@ def _best_group(summary: pd.DataFrame | None, group_col: str, rate_col: str) -> 
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
+
+
+def _multi_group_rate_summary(
+    df: pd.DataFrame,
+    group_cols: list[str],
+    success_col: str,
+    rate_col: str,
+) -> pd.DataFrame:
+    columns = [*group_cols, "attempt_count", "success_count", rate_col, "luck_score"]
+    if df.empty or any(col not in df.columns for col in [*group_cols, success_col]):
+        return pd.DataFrame(columns=columns)
+
+    filtered = df.dropna(subset=group_cols).copy()
+    if filtered.empty:
+        return pd.DataFrame(columns=columns)
+
+    filtered[success_col] = filtered[success_col].fillna(False).astype(bool)
+    summary = (
+        filtered.groupby(group_cols, dropna=True)
+        .agg(attempt_count=(success_col, "size"), success_count=(success_col, "sum"))
+        .reset_index()
+    )
+    summary[rate_col] = np.where(
+        summary["attempt_count"] > 0,
+        summary["success_count"] / summary["attempt_count"],
+        np.nan,
+    )
+    baseline = _safe_rate(int(filtered[success_col].sum()), int(len(filtered)))
+    summary["luck_score"] = summary[rate_col].map(lambda rate: _relative_luck_score(rate, baseline))
+    return summary.sort_values(group_cols)
 
 
 def _safe_rate(success_count: int, attempt_count: int) -> float | None:
