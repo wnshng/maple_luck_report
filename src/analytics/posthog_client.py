@@ -51,7 +51,7 @@ def get_posthog_client():
     if not _analytics_enabled() or Posthog is None:
         return None
     api_key = _get_config_value("POSTHOG_API_KEY")
-    host = _get_config_value("POSTHOG_HOST", "https://app.posthog.com")
+    host = _get_config_value("POSTHOG_HOST", "https://us.i.posthog.com")
     if not api_key:
         return None
     try:
@@ -85,11 +85,21 @@ def track_posthog_event(event_name: str, properties: dict[str, Any] | None = Non
     try:
         client = get_posthog_client()
         if client is None:
+            print("[PostHog] client is None")
             return
+
         client.capture(
             distinct_id=get_or_create_anonymous_user_id(),
             event=event_name,
             properties=sanitize_properties(properties),
         )
-    except Exception:
-        return
+
+        try:
+            client.flush()
+        except Exception:
+            pass
+
+        print(f"[PostHog] sent event: {event_name}")
+
+    except Exception as exc:
+        print(f"[PostHog] failed: {type(exc).__name__}: {exc}")
