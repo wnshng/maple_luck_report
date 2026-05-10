@@ -3120,14 +3120,12 @@ def _inject_style(theme_mode: str) -> None:
         border: 0 !important;
     }}
 
-    div[data-testid="stToolbar"] > *,
-    [data-testid="stToolbar"] > * {{
-        display: none !important;
-    }}
-
     [data-testid="collapsedControl"],
     [data-testid="stSidebarCollapsedControl"],
-    button[kind="header"] {{
+    button[kind="header"][aria-label*="sidebar"],
+    button[kind="header"][title*="sidebar"],
+    button[kind="header"][aria-label*="Sidebar"],
+    button[kind="header"][title*="Sidebar"] {{
         position: fixed !important;
         top: 0.85rem !important;
         left: 0.9rem !important;
@@ -3160,7 +3158,10 @@ def _inject_style(theme_mode: str) -> None:
 
     [data-testid="collapsedControl"]:hover,
     [data-testid="stSidebarCollapsedControl"]:hover,
-    button[kind="header"]:hover {{
+    button[kind="header"][aria-label*="sidebar"]:hover,
+    button[kind="header"][title*="sidebar"]:hover,
+    button[kind="header"][aria-label*="Sidebar"]:hover,
+    button[kind="header"][title*="Sidebar"]:hover {{
         background: var(--card-bg-soft) !important;
         border-color: var(--accent) !important;
     }}
@@ -3178,7 +3179,19 @@ def _inject_style(theme_mode: str) -> None:
     div[data-testid="stToolbar"] a[title*="Deploy"],
     div[data-testid="stToolbar"] a[aria-label*="Deploy"],
     div[data-testid="stToolbar"] [data-testid*="deploy"],
-    div[data-testid="stToolbar"] [data-testid*="Deploy"] {{
+    div[data-testid="stToolbar"] [data-testid*="Deploy"],
+    div[data-testid="stToolbar"] button[title*="Git"],
+    div[data-testid="stToolbar"] button[aria-label*="Git"],
+    div[data-testid="stToolbar"] a[title*="Git"],
+    div[data-testid="stToolbar"] a[aria-label*="Git"],
+    div[data-testid="stToolbar"] button[title*="Share"],
+    div[data-testid="stToolbar"] button[aria-label*="Share"],
+    div[data-testid="stToolbar"] a[title*="Share"],
+    div[data-testid="stToolbar"] a[aria-label*="Share"],
+    div[data-testid="stToolbar"] button[title*="share"],
+    div[data-testid="stToolbar"] button[aria-label*="share"],
+    div[data-testid="stToolbar"] a[title*="share"],
+    div[data-testid="stToolbar"] a[aria-label*="share"] {{
         display: none !important;
     }}
 
