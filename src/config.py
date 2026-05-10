@@ -51,16 +51,26 @@ def ensure_data_dirs() -> None:
 
 
 def get_env_api_key() -> str:
-    try:
-        import streamlit as st
+    return _get_config_value("NEXON_OPEN_API_KEY", "").strip()
 
-        if "NEXON_OPEN_API_KEY" in st.secrets:
-            value = st.secrets.get("NEXON_OPEN_API_KEY")
-            return str(value).strip() if value is not None else ""
-    except Exception:
-        pass
-    load_dotenv(ROOT_DIR / ".env")
-    return os.getenv("NEXON_OPEN_API_KEY", "").strip()
+
+def get_env_bool(name: str, default: bool = False) -> bool:
+    value = _get_config_value(name, "true" if default else "false")
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_streamlit_cloud_environment() -> bool:
+    root_text = str(ROOT_DIR)
+    if root_text.startswith("/mount/src"):
+        return True
+    runtime = _get_config_value("STREAMLIT_RUNTIME", "")
+    return str(runtime).strip().lower() in {"streamlit_cloud", "community_cloud"}
+
+
+def is_local_state_persistence_enabled() -> bool:
+    if is_streamlit_cloud_environment():
+        return False
+    return get_env_bool("ENABLE_LOCAL_STATE_PERSISTENCE", default=False)
 
 
 def setup_logging() -> None:
@@ -154,3 +164,16 @@ def _subtract_years(value: date, years: int) -> date:
         return value.replace(year=value.year - years)
     except ValueError:
         return value.replace(month=2, day=28, year=value.year - years)
+
+
+def _get_config_value(name: str, default: str | None = None) -> str:
+    try:
+        import streamlit as st
+
+        if name in st.secrets:
+            value = st.secrets.get(name)
+            return str(value).strip() if value is not None else (default or "")
+    except Exception:
+        pass
+    load_dotenv(ROOT_DIR / ".env")
+    return os.getenv(name, default or "").strip()

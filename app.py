@@ -20,6 +20,7 @@ from src.analytics.logger import (
     log_error,
     log_event,
 )
+from src.analytics.summary_events import track_analysis_summary
 from src.analytics.storage import init_analytics_db, is_analytics_enabled
 from src.auth import get_nexon_login_guide
 from src.config import (
@@ -30,6 +31,7 @@ from src.config import (
     get_available_date_range,
     get_default_two_year_range,
     get_env_api_key,
+    is_local_state_persistence_enabled,
     get_today_kst,
     setup_logging,
 )
@@ -208,6 +210,7 @@ def main() -> None:
     _handle_api_load(controls)
 
     context = _build_context(controls)
+    track_analysis_summary(context)
     _render_profile_header(context)
 
     admin_state = render_admin_analytics_entry()
@@ -298,6 +301,8 @@ def _sanitize_basic_cache_for_persistence(cache: dict[str, Any]) -> dict[str, An
 
 
 def _restore_persisted_app_state() -> None:
+    if not is_local_state_persistence_enabled():
+        return
     try:
         if not PERSISTED_APP_STATE_PATH.exists():
             return
@@ -318,6 +323,8 @@ def _restore_persisted_app_state() -> None:
 
 
 def _persist_app_state() -> None:
+    if not is_local_state_persistence_enabled():
+        return
     try:
         payload: dict[str, Any] = {}
         for key in PERSISTED_APP_STATE_KEYS:

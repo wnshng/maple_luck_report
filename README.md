@@ -142,6 +142,7 @@ streamlit run app.py
 ```bash
 NEXON_OPEN_API_KEY=발급받은_API_KEY
 ENABLE_ANALYTICS=true
+ENABLE_LOCAL_STATE_PERSISTENCE=false
 POSTHOG_API_KEY=
 POSTHOG_HOST=https://app.posthog.com
 APP_VERSION=1.0.0
@@ -155,12 +156,35 @@ Streamlit Cloud에서는 `.env` 대신 `App -> Settings -> Secrets`에 아래 �
 
 ```toml
 ENABLE_ANALYTICS = "true"
+ENABLE_LOCAL_STATE_PERSISTENCE = "false"
 POSTHOG_API_KEY = "phc_xxxxxxxxx"
 POSTHOG_HOST = "https://app.posthog.com"
 APP_VERSION = "1.0.0"
 ```
 
 PostHog API Key가 없으면 내부 SQLite 기반 analytics만 동작하고, PostHog 전송은 자동으로 비활성화됩니다.
+
+## 다중 사용자 배포 안전성
+
+- 기본값으로 서버 파일 기반 상태 복원은 비활성화되어 있습니다.
+- 즉, `.app_state/last_state.pkl`를 사용해 이전 사용자의 캐릭터/기록/옵션을 다음 사용자에게 복원하지 않습니다.
+- 사용자별 분석 데이터와 화면 상태는 Streamlit `session_state` 안에서만 유지됩니다.
+- `ENABLE_LOCAL_STATE_PERSISTENCE=true`를 명시적으로 켜지 않는 한 `.app_state/last_state.pkl`는 생성되지 않습니다.
+- Streamlit Cloud 같은 공유 배포 환경에서는 로컬 상태 저장을 강제로 비활성화합니다.
+- 기존 로컬 개발 과정에서 생성된 `.app_state/last_state.pkl`가 있다면 삭제 대상으로 보고 정리하는 것을 권장합니다.
+
+## PostHog 집계 요약 이벤트
+
+- `analysis_summary_generated` 이벤트는 사용자가 기록을 불러와 분석이 계산된 뒤 집계 통계량만 전송합니다.
+- 예시 전송 항목:
+  - `date_range_days`
+  - `cube_attempts`, `potential_attempts`, `starforce_attempts`
+  - `major_option_rate`, `effective_option_rate`, `grade_up_rate`
+  - `starforce_success_rate`, `starforce_destroy_rate`
+  - `character_class`, `world_name`, `character_level_bucket`
+  - `best_cube_day_of_month`, `best_cube_hour`, `best_cube_weekday`, `best_cube_type`
+  - `best_starforce_day_of_month`, `best_starforce_hour`, `best_starforce_weekday`, `best_starforce_transition`
+- 원본 큐브/스타포스 기록, API Key 원문, 캐릭터명 원문, ocid 원문은 PostHog로 전송하지 않습니다.
 
 ## API 디버그 탭
 
@@ -183,7 +207,7 @@ PostHog API Key가 없으면 내부 SQLite 기반 analytics만 동작하고, Pos
 - 실제 API 호출 날짜 수
 - 실패한 날짜 목록
 
-API Key 자체는 화면에 표시하지 않습니다. 운영 로그와 PostHog 전송에도 API Key 원문, 캐릭터명 원문, ocid 원문, raw API 응답과 원본 기록은 포함하지 않습니다.
+API Key 자체는 화면에 표시하지 않습니다. 운영 로그와 PostHog 전송에도 API Key 원문, 캐릭터명 원문, ocid 원문, raw API 응답과 원본 기록은 포함하지 않습니다. 내부 `analytics.db`에는 익명 이벤트 로그만 저장되며, 사용자의 원본 분석 데이터는 저장하지 않습니다.
 
 ## 주의사항
 
@@ -194,6 +218,14 @@ API Key 자체는 화면에 표시하지 않습니다. 운영 로그와 PostHog 
 - 이 앱은 미래 성공을 예측하거나 보장하지 않습니다.
 - API Key는 저장하지 않으며, 사용자의 세션에서만 사용합니다.
 - PostHog를 사용할 경우에도 익명 사용자 ID 기준 이벤트만 전송하며, 민감한 원본 데이터는 전송하지 않습니다.
+- 다중 사용자 공유 배포에서는 사용자 A의 캐릭터/기록/옵션이 사용자 B에게 복원되지 않도록 서버 파일 기반 상태 저장을 기본 비활성화합니다.
+
+## 다중 사용자 확인 방법
+
+1. 브라우저 A에서 캐릭터와 기록을 불러옵니다.
+2. 다른 브라우저 또는 시크릿 창 B로 같은 앱에 접속합니다.
+3. B 화면은 빈 초기 상태로 시작해야 하며, A의 캐릭터명/기록 수/옵션/분석 결과가 보이면 안 됩니다.
+4. A와 B는 각각 별도의 `session_state` 안에서만 상태를 유지합니다.
 
 ## 한계점
 

@@ -6,6 +6,10 @@ __pycache__/
 analytics.db
 analytics.db-*
 .app_state/
+*.db
+*.sqlite
+*.sqlite3
+.streamlit/secrets.toml
 data/raw/*.json
 data/raw/daily/
 data/processed/*.csv
