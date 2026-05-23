@@ -7,14 +7,17 @@ import plotly.graph_objects as go
 
 
 COLOR_SEQUENCE = ["#F97316", "#FB923C", "#F59E0B", "#F43F5E", "#C084FC", "#22C55E"]
+EDITORIAL_ACCENT = "#F97316"
+EDITORIAL_DANGER = "#F87171"
+EDITORIAL_MUTED = "rgba(148,163,184,0.32)"
 CURRENT_THEME_MODE = "light"
 
 LIGHT_PLOTLY_THEME = {
     "paper_bgcolor": "rgba(0,0,0,0)",
-    "plot_bgcolor": "rgba(255,255,255,0.92)",
+    "plot_bgcolor": "rgba(0,0,0,0)",
     "font_color": "#1F2937",
-    "grid_color": "rgba(128,128,128,0.18)",
-    "axis_line": "#CBD5E1",
+    "grid_color": "rgba(148,163,184,0.16)",
+    "axis_line": "rgba(148,163,184,0.18)",
     "legend_font": "#475569",
     "hover_bg": "#FFFFFF",
     "hover_font": "#111827",
@@ -22,11 +25,11 @@ LIGHT_PLOTLY_THEME = {
 }
 
 DARK_PLOTLY_THEME = {
-    "paper_bgcolor": "#0F172A",
-    "plot_bgcolor": "#1E293B",
+    "paper_bgcolor": "rgba(0,0,0,0)",
+    "plot_bgcolor": "rgba(0,0,0,0)",
     "font_color": "#F8FAFC",
-    "grid_color": "#334155",
-    "axis_line": "#475569",
+    "grid_color": "rgba(148,163,184,0.14)",
+    "axis_line": "rgba(148,163,184,0.18)",
     "legend_font": "#CBD5E1",
     "hover_bg": "#0F172A",
     "hover_font": "#F8FAFC",
@@ -43,9 +46,11 @@ def apply_plotly_theme(fig: go.Figure, theme_mode: str | None = None) -> go.Figu
     mode = (theme_mode or CURRENT_THEME_MODE).lower()
     palette = DARK_PLOTLY_THEME if mode == "dark" else LIGHT_PLOTLY_THEME
     fig.update_layout(
+        title_text="",
         paper_bgcolor=palette["paper_bgcolor"],
         plot_bgcolor=palette["plot_bgcolor"],
         font=dict(color=palette["font_color"], family="Pretendard, Apple SD Gothic Neo, sans-serif", size=13),
+        showlegend=False,
         legend=dict(font=dict(color=palette["legend_font"])),
         hoverlabel=dict(
             bgcolor=palette["hover_bg"],
@@ -53,8 +58,22 @@ def apply_plotly_theme(fig: go.Figure, theme_mode: str | None = None) -> go.Figu
             bordercolor=palette["hover_border"],
         ),
     )
-    fig.update_xaxes(gridcolor=palette["grid_color"], linecolor=palette["axis_line"], zerolinecolor=palette["grid_color"])
-    fig.update_yaxes(gridcolor=palette["grid_color"], linecolor=palette["axis_line"], zerolinecolor=palette["grid_color"])
+    fig.update_xaxes(
+        showgrid=False,
+        showline=False,
+        ticks="",
+        gridcolor=palette["grid_color"],
+        linecolor=palette["axis_line"],
+        zeroline=False,
+    )
+    fig.update_yaxes(
+        showgrid=False,
+        showline=False,
+        ticks="",
+        gridcolor=palette["grid_color"],
+        linecolor=palette["axis_line"],
+        zeroline=False,
+    )
     return fig
 
 
@@ -76,6 +95,22 @@ def add_sample_size_opacity(plot_df: pd.DataFrame, attempt_col: str, min_attempt
     return plot_df[attempt_col].map(lambda value: 0.35 if int(value) < min_attempts else 1.0).tolist()
 
 
+def _editorial_bar_colors(
+    plot_df: pd.DataFrame,
+    value_col: str,
+    *,
+    low_is_good: bool = False,
+    accent_color: str = EDITORIAL_ACCENT,
+) -> list[str]:
+    if plot_df.empty or value_col not in plot_df.columns:
+        return []
+    values = pd.to_numeric(plot_df[value_col], errors="coerce")
+    if values.dropna().empty:
+        return [EDITORIAL_MUTED] * len(plot_df)
+    highlight_idx = values.idxmin() if low_is_good else values.idxmax()
+    return [accent_color if idx == highlight_idx else EDITORIAL_MUTED for idx in plot_df.index]
+
+
 def format_rate_axis(fig: go.Figure, axis: str = "y") -> go.Figure:
     if axis == "x":
         fig.update_xaxes(title="확률 (%)")
@@ -85,8 +120,13 @@ def format_rate_axis(fig: go.Figure, axis: str = "y") -> go.Figure:
 
 
 def apply_chart_layout(fig: go.Figure, title: str, category_count: int, orientation: str = "auto") -> go.Figure:
-    height = max(360, 240 + min(category_count, 30) * 18)
-    fig.update_layout(title=title, height=height, margin=dict(l=20, r=20, t=60, b=80))
+    if orientation == "h":
+        height = max(280, min(440, 180 + min(category_count, 24) * 20))
+        margin = dict(l=92, r=18, t=18, b=24)
+    else:
+        height = 300 if category_count >= 20 else 280
+        margin = dict(l=18, r=18, t=18, b=56)
+    fig.update_layout(title_text="", height=height, margin=margin)
     if orientation != "h":
         fig.update_xaxes(tickangle=-45)
     return fig
@@ -205,6 +245,7 @@ def plot_cube_type_rate(
     plot_df = plot_df.sort_values(["adjusted_rate", "rate_percent", attempt_col], ascending=[False, False, False]).copy()
     plot_df["rate_label"] = plot_df["rate_percent"].map(lambda value: f"{value:.1f}%")
     opacities = add_sample_size_opacity(plot_df, attempt_col, min_attempts)
+    marker_colors = _editorial_bar_colors(plot_df, "rate_percent")
     hover_cols = [attempt_col, count_col, "confidence", "overall_gap_label", "reference_gap_label", "sample_note", "full_label"]
     fig = go.Figure(
         data=[
@@ -214,7 +255,7 @@ def plot_cube_type_rate(
                 orientation="h",
                 text=plot_df["rate_label"],
                 textposition="outside",
-                marker=dict(color="#F97316", opacity=opacities),
+                marker=dict(color=marker_colors, opacity=opacities),
                 customdata=np.column_stack(
                     [
                         plot_df[col].to_numpy() if col in plot_df.columns else np.array([None] * len(plot_df))
@@ -309,8 +350,14 @@ def plot_starforce_transition_rate(
     plot_df["rate_percent"] = plot_df[rate_col] * 100
     plot_df["rate_label"] = plot_df.apply(lambda row: f"{_format_rate_label(row[rate_col])} · n={int(row['attempts'])}", axis=1)
 
-    color = "#38BDF8" if rate_col == "success_rate" else "#F87171"
+    color = EDITORIAL_ACCENT if rate_col == "success_rate" else EDITORIAL_DANGER
     opacities = plot_df["attempts"].map(_opacity_for_attempts_bucket).tolist()
+    marker_colors = _editorial_bar_colors(
+        plot_df,
+        "rate_percent",
+        low_is_good=rate_col == "destroy_rate",
+        accent_color=color,
+    )
     customdata = np.column_stack(
         [
             plot_df["transition_label"].to_numpy(),
@@ -331,7 +378,7 @@ def plot_starforce_transition_rate(
                 orientation="h",
                 text=plot_df["rate_label"],
                 textposition="outside",
-                marker=dict(color=color, opacity=opacities),
+                marker=dict(color=marker_colors, opacity=opacities),
                 customdata=customdata,
                 hovertemplate=(
                     "전이 구간: %{customdata[0]}<br>"
@@ -351,8 +398,8 @@ def plot_starforce_transition_rate(
     fig.update_xaxes(range=[0, max(8, max_rate * 1.22)])
     fig = apply_chart_layout(_style_figure(fig), title, len(plot_df), orientation="h")
     fig.update_layout(
-        height=max(360, min(720, len(plot_df) * 34 + 120)),
-        margin=dict(l=120, r=40, t=70, b=50),
+        height=max(300, min(520, len(plot_df) * 26 + 110)),
+        margin=dict(l=112, r=24, t=20, b=38),
     )
     return fig
 
@@ -389,6 +436,7 @@ def plot_hourly_rate(
         if "attempts" in plot_df.columns
         else 1.0
     )
+    marker_colors = _editorial_bar_colors(plot_df, "rate_percent", low_is_good=rate_col == "destroy_rate")
     hover_cols = ["hour", "attempts", "success_count", "lift_vs_overall", "overall_gap_label", "reference_gap_label", "confidence", "sample_note"]
     customdata = np.column_stack(
         [
@@ -403,7 +451,7 @@ def plot_hourly_rate(
                 y=plot_df["rate_percent"],
                 text=plot_df["rate_label"],
                 textposition="outside",
-                marker=dict(color="#FB923C", opacity=opacities),
+                marker=dict(color=marker_colors, opacity=opacities),
                 customdata=customdata,
                 hovertemplate=(
                     "시간: %{x}<br>실제률: %{y:.1f}%<br>"
@@ -417,6 +465,98 @@ def plot_hourly_rate(
     fig.update_layout(yaxis_title="확률 (%)", xaxis_title=None, title=title)
     fig.update_xaxes(categoryorder="array", categoryarray=[f"{hour}시" for hour in range(24)])
     return _style_figure(fig)
+
+
+def plot_editorial_hour_evidence(
+    hour_summary: pd.DataFrame,
+    rate_col: str,
+    title: str,
+    *,
+    highlight_label: str | None = None,
+    min_attempts: int = 10,
+    show_low_sample: bool = True,
+) -> go.Figure:
+    if hour_summary is None or hour_summary.empty or rate_col not in hour_summary.columns:
+        return _empty_figure(f"{title} 데이터가 없습니다.")
+
+    plot_df = hour_summary.copy()
+    if "hour_label" not in plot_df.columns and "hour" in plot_df.columns:
+        plot_df["hour_label"] = plot_df["hour"].map(lambda hour: f"{int(hour)}시")
+    if "attempts" not in plot_df.columns and "attempt_count" in plot_df.columns:
+        plot_df["attempts"] = plot_df["attempt_count"]
+    if "attempts" not in plot_df.columns:
+        plot_df["attempts"] = 0
+
+    plot_df["sample_note"] = plot_df["attempts"].map(lambda value: "표본 부족" if int(value) < min_attempts else "기준 충족")
+    if not show_low_sample:
+        plot_df = plot_df[plot_df["attempts"] >= min_attempts].copy()
+    if plot_df.empty:
+        return _empty_figure(f"{title} 데이터가 없습니다.")
+
+    plot_df["rate_percent"] = plot_df[rate_col].fillna(0) * 100
+    plot_df["rate_label"] = plot_df.apply(
+        lambda row: f"{row['rate_percent']:.1f}% · n={int(row['attempts'])}",
+        axis=1,
+    )
+    highlight = str(highlight_label or "")
+    plot_df["is_highlight"] = plot_df["hour_label"].astype(str) == highlight
+    if not plot_df["is_highlight"].any():
+        max_idx = plot_df["rate_percent"].idxmax()
+        plot_df.loc[max_idx, "is_highlight"] = True
+        highlight = str(plot_df.loc[max_idx, "hour_label"])
+
+    muted_color = "rgba(148,163,184,0.32)"
+    accent_color = "#F97316"
+    marker_colors = plot_df["is_highlight"].map(lambda value: accent_color if value else muted_color).tolist()
+    opacities = plot_df["attempts"].map(_opacity_for_attempts_bucket).tolist()
+
+    customdata = np.column_stack(
+        [
+            plot_df["attempts"].to_numpy(),
+            plot_df.get("success_count", pd.Series([None] * len(plot_df))).to_numpy(),
+            plot_df.get("confidence", pd.Series(["-"] * len(plot_df))).to_numpy(),
+            plot_df["sample_note"].to_numpy(),
+            plot_df["rate_label"].to_numpy(),
+        ]
+    )
+
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                x=plot_df["hour_label"],
+                y=plot_df["rate_percent"],
+                marker=dict(color=marker_colors, opacity=opacities),
+                text=plot_df.apply(lambda row: row["rate_label"] if row["is_highlight"] else "", axis=1).tolist(),
+                textposition="outside",
+                customdata=customdata,
+                hovertemplate=(
+                    "시간: %{x}<br>확률: %{y:.1f}%<br>"
+                    "시도 수: %{customdata[0]}<br>발생 수: %{customdata[1]}<br>"
+                    "신뢰도: %{customdata[2]}<br>%{customdata[3]}<extra></extra>"
+                ),
+            )
+        ]
+    )
+    fig.update_layout(
+        title_text="",
+        height=240,
+        margin=dict(l=8, r=8, t=28, b=24),
+        bargap=0.42,
+        xaxis_title=None,
+        yaxis_title=None,
+    )
+    fig.update_xaxes(categoryorder="array", categoryarray=[f"{hour}시" for hour in range(24)])
+    max_rate = float(plot_df["rate_percent"].max()) if not plot_df.empty else 0.0
+    fig.update_yaxes(range=[0, max(8, max_rate * 1.28)], showticklabels=False)
+    fig.add_annotation(
+        x=highlight,
+        y=max_rate * 1.12 if max_rate else 1,
+        text=f"오늘의 근거 · {highlight}",
+        showarrow=False,
+        font=dict(size=12, color=accent_color),
+        xanchor="center",
+    )
+    return apply_plotly_theme(fig)
 
 
 def plot_rate_heatmap(
@@ -490,8 +630,8 @@ def plot_rate_heatmap(
             z=rate_pivot.values,
             text=text.values,
             texttemplate="%{text}",
-            colorscale=[(0.0, "#FFF1E6"), (0.55, "#FDBA74"), (1.0, "#F97316")],
-            colorbar_title="확률 (%)",
+            colorscale=[(0.0, "rgba(148,163,184,0.10)"), (0.68, "rgba(148,163,184,0.28)"), (1.0, EDITORIAL_ACCENT)],
+            showscale=False,
             customdata=customdata,
             hovertemplate=hovertemplate,
         )
@@ -724,6 +864,7 @@ def _bar_rate(
     orientation = "v"
     if x_col not in {"day_of_month", "day_of_month_label", "hour", "hour_label", "weekday_kr", "hour_band"} and len(plot_df) > 8:
         orientation = "h"
+    marker_colors = _editorial_bar_colors(plot_df, "rate_percent", low_is_good=rate_col == "destroy_rate")
     fig = go.Figure(
         data=[
             go.Bar(
@@ -731,7 +872,7 @@ def _bar_rate(
                 y=plot_df["short_label"] if orientation == "h" else plot_df["rate_percent"],
                 text=plot_df["rate_label"],
                 textposition="outside",
-                marker=dict(color="#FB923C", opacity=opacities),
+                marker=dict(color=marker_colors, opacity=opacities),
                 customdata=customdata,
                 hovertemplate=(
                     "조건: %{customdata[6]}<br>실제률: "
@@ -767,14 +908,14 @@ def _empty_figure(message: str) -> go.Figure:
     fig.add_annotation(text=message, showarrow=False, x=0.5, y=0.5, xref="paper", yref="paper")
     fig.update_xaxes(visible=False)
     fig.update_yaxes(visible=False)
-    fig.update_layout(height=320, margin=dict(l=20, r=20, t=40, b=20))
+    fig.update_layout(height=240, margin=dict(l=16, r=16, t=24, b=16))
     return fig
 
 
 def _style_figure(fig: go.Figure) -> go.Figure:
     fig.update_layout(
-        height=360,
-        margin=dict(l=20, r=20, t=60, b=20),
+        height=280,
+        margin=dict(l=10, r=10, t=14, b=18),
     )
     return apply_plotly_theme(fig)
 

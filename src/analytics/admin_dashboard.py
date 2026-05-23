@@ -30,21 +30,20 @@ def render_admin_analytics_entry() -> dict[str, bool]:
     if not query_admin:
         return state
 
-    with st.sidebar:
-        with st.expander("관리자 모드", expanded=True):
-            if not admin_password:
-                st.caption("ADMIN_PASSWORD가 설정되지 않아 관리자 대시보드가 비활성화되어 있습니다.")
-                return state
+    with st.expander("관리자 모드", expanded=False):
+        if not admin_password:
+            st.caption("ADMIN_PASSWORD가 설정되지 않아 관리자 대시보드가 비활성화되어 있습니다.")
+            return state
 
-            state["enabled"] = True
-            password = st.text_input("관리자 비밀번호", type="password", key="admin_password_input")
-            if st.button("관리자 인증", key="admin_auth_button", width="stretch"):
-                st.session_state["admin_authenticated"] = password == admin_password
-            if st.session_state.get("admin_authenticated", False):
-                st.success("관리자 인증이 완료되었습니다.")
-                state["authorized"] = True
-            elif password:
-                st.error("관리자 인증에 실패했습니다.")
+        state["enabled"] = True
+        password = st.text_input("관리자 비밀번호", type="password", key="admin_password_input")
+        if st.button("관리자 인증", key="admin_auth_button", width="stretch"):
+            st.session_state["admin_authenticated"] = password == admin_password
+        if st.session_state.get("admin_authenticated", False):
+            st.success("관리자 인증이 완료되었습니다.")
+            state["authorized"] = True
+        elif password:
+            st.error("관리자 인증에 실패했습니다.")
     return state
 
 

@@ -85,7 +85,6 @@ def track_posthog_event(event_name: str, properties: dict[str, Any] | None = Non
     try:
         client = get_posthog_client()
         if client is None:
-            print("[PostHog] client is None")
             return
 
         client.capture(
@@ -98,8 +97,5 @@ def track_posthog_event(event_name: str, properties: dict[str, Any] | None = Non
             client.flush()
         except Exception:
             pass
-
-        print(f"[PostHog] sent event: {event_name}")
-
-    except Exception as exc:
-        print(f"[PostHog] failed: {type(exc).__name__}: {exc}")
+    except Exception:
+        return

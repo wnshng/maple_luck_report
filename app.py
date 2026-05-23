@@ -11,7 +11,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from src.analytics.admin_dashboard import render_admin_analytics_dashboard, render_admin_analytics_entry
 from src.analytics.logger import (
@@ -90,6 +89,7 @@ from src.nexon_client import NexonAPIError, NexonMapleClient
 from src.visualizations import (
     plot_cube_type_rate,
     plot_day_of_month_rate,
+    plot_editorial_hour_evidence,
     plot_hour_band_rate,
     plot_hourly_rate,
     plot_item_rate,
@@ -196,23 +196,30 @@ def main() -> None:
     st.set_page_config(
         page_title="메이플 운빨 리포트",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
     _init_state()
     _bootstrap_analytics()
+    theme_mode, resolved_theme_mode = _active_theme_state()
+    st.session_state["theme_mode"] = theme_mode
+    st.session_state["resolved_theme_mode"] = resolved_theme_mode
+    set_plotly_theme_mode(resolved_theme_mode)
+    _inject_style(resolved_theme_mode)
 
-    st.title("메이플 운빨 리포트")
-    st.caption("최근 2년 큐브·잠재능력·스타포스 기록으로 내 운빨 패턴을 확인해보세요.")
-
-    controls = _render_sidebar()
+    _render_service_intro()
+    with st.expander("분석 설정", expanded=not _has_loaded_records()):
+        controls = _render_main_controls()
     set_plotly_theme_mode(controls["resolved_theme_mode"])
     _inject_style(controls["resolved_theme_mode"])
-    _inject_external_analytics_scripts()
     _handle_api_load(controls)
 
     context = _build_context(controls)
     track_analysis_summary(context)
-    _render_profile_header(context)
+    if _has_context_data(context):
+        _render_profile_header(context)
+        _render_report_hero(context)
+    else:
+        _render_empty_state(context)
 
     admin_state = render_admin_analytics_entry()
 
@@ -348,50 +355,6 @@ def _bootstrap_analytics() -> None:
         st.session_state["_analytics_app_loaded_logged"] = True
 
 
-def _inject_external_analytics_scripts() -> None:
-    if st.session_state.get("_external_analytics_injected"):
-        return
-
-    ga4_measurement_id = os.getenv("GA4_MEASUREMENT_ID", "").strip()
-    hotjar_site_id = os.getenv("HOTJAR_SITE_ID", "").strip()
-    hotjar_snippet_version = os.getenv("HOTJAR_SNIPPET_VERSION", "6").strip() or "6"
-
-    script_parts: list[str] = []
-    if ga4_measurement_id:
-        script_parts.append(
-            f"""
-            <script async src="https://www.googletagmanager.com/gtag/js?id={ga4_measurement_id}"></script>
-            <script>
-              window.dataLayer = window.dataLayer || [];
-              function gtag(){{dataLayer.push(arguments);}}
-              gtag('js', new Date());
-              gtag('config', '{ga4_measurement_id}');
-            </script>
-            """
-        )
-    if hotjar_site_id:
-        script_parts.append(
-            f"""
-            <script>
-              (function(h,o,t,j,a,r){{
-                  h.hj=h.hj||function(){{(h.hj.q=h.hj.q||[]).push(arguments)}};
-                  h._hjSettings={{hjid:{hotjar_site_id},hjsv:{hotjar_snippet_version}}};
-                  a=o.getElementsByTagName('head')[0];
-                  r=o.createElement('script');r.async=1;
-                  r.src=t+h._hjSettings.hjid+j+h._hjSettings.hjsv;
-                  a.appendChild(r);
-              }})(window,document,'https://static.hotjar.com/c/hotjar-','.js?sv=');
-            </script>
-            """
-        )
-
-    if not script_parts:
-        return
-
-    components.html("".join(script_parts), height=0, width=0)
-    st.session_state["_external_analytics_injected"] = True
-
-
 def _character_level_bucket(level: Any) -> str:
     numeric = pd.to_numeric(level, errors="coerce")
     if pd.isna(numeric):
@@ -409,6 +372,36 @@ def _log_tab_view_once(tab_name: str) -> None:
     st.session_state["_analytics_viewed_tabs"] = sorted(viewed)
 
 
+def _has_loaded_records() -> bool:
+    for key in ["cube_df", "potential_df", "starforce_df"]:
+        df = st.session_state.get(key, pd.DataFrame())
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            return True
+    return False
+
+
+def _has_context_data(context: dict[str, Any]) -> bool:
+    for key in ["effective_df", "starforce_df", "cube_df", "potential_df"]:
+        df = context.get(key, pd.DataFrame())
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            return True
+    return False
+
+
+def _render_service_intro() -> None:
+    st.markdown(
+        """
+<div class="maple-landing-hero">
+  <div class="maple-landing-kicker">Maple Luck Report</div>
+  <h1>오늘의 운빨 요약</h1>
+  <p class="maple-landing-copy">최근 2년 강화 기록을 바탕으로 내 큐브·잠재능력·스타포스 흐름을 한 장의 리포트처럼 정리합니다.</p>
+  <p class="maple-landing-subcopy">필터와 원본 데이터는 아래에서 천천히 열어보고, 먼저 핵심 결과와 해석부터 확인할 수 있게 구성했습니다.</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def get_theme_palette(theme_mode: str) -> dict[str, str]:
     return DARK_THEME_PALETTE if theme_mode == "dark" else LIGHT_THEME_PALETTE
 
@@ -417,6 +410,23 @@ def _resolve_theme_mode(theme_mode: str) -> str:
     if theme_mode == "system":
         return "dark" if st.get_option("theme.base") == "dark" else "light"
     return theme_mode
+
+
+def _active_theme_state() -> tuple[str, str]:
+    widget_value = st.session_state.get("theme_mode_select")
+    if isinstance(widget_value, str):
+        mapped = {
+            "라이트": "light",
+            "다크": "dark",
+            "시스템": "system",
+            "light": "light",
+            "dark": "dark",
+            "system": "system",
+        }.get(widget_value)
+        if mapped:
+            return mapped, _resolve_theme_mode(mapped)
+    theme_mode = str(st.session_state.get("theme_mode", "light"))
+    return theme_mode, _resolve_theme_mode(theme_mode)
 
 
 def render_theme_toggle() -> tuple[str, str]:
@@ -641,7 +651,7 @@ def _sync_account_character_list(api_key: str) -> pd.DataFrame:
         st.session_state["selected_character_option"] = str(default_row["option_label"])
         log_event(
             "auto_character_selected_by_level",
-            page_name="sidebar",
+            page_name="control_panel",
             properties={
                 "character_class": default_row.get("character_class"),
                 "world_name": default_row.get("world_name"),
@@ -706,8 +716,8 @@ def _get_selected_character_with_basic(api_key: str, selected_character: dict[st
                 "error": str(exc),
                 "selected_ocid_exists": True,
             }
-            log_error("character_basic_fetch_failed", exc, page_name="sidebar")
-            st.sidebar.info("캐릭터 기본 정보 조회에 실패했지만, 목록 정보 기준으로 분석을 계속합니다.")
+            log_error("character_basic_fetch_failed", exc, page_name="control_panel")
+            st.info("캐릭터 기본 정보 조회에 실패했지만, 목록 정보 기준으로 분석을 계속합니다.")
             basic_cache[ocid] = {}
         st.session_state["character_basic_by_ocid"] = basic_cache
         _persist_app_state()
@@ -733,7 +743,7 @@ def update_major_options_on_character_change(selected_character: dict[str, Any] 
         st.session_state["selected_major_options"] = default_options
         log_event(
             "auto_major_option_applied",
-            page_name="sidebar",
+            page_name="control_panel",
             properties={
                 "character_class": character_class,
                 "inferred_main_stat": inferred_main_stat,
@@ -744,29 +754,87 @@ def update_major_options_on_character_change(selected_character: dict[str, Any] 
     return inferred_main_stat
 
 
-def _render_sidebar_character_profile(selected_character: dict[str, Any] | None) -> None:
+def _render_selected_character_snapshot(selected_character: dict[str, Any] | None) -> None:
     if not selected_character:
-        st.caption("캐릭터 목록을 불러오면 레벨이 가장 높은 캐릭터가 기본 분석 캐릭터로 선택됩니다.")
+        st.markdown(
+            """
+<div class="maple-inline-profile maple-inline-profile-empty">
+  <div class="maple-inline-profile-title">분석 캐릭터</div>
+  <div class="maple-inline-profile-body">캐릭터 목록을 불러오면 레벨이 가장 높은 캐릭터가 기본 분석 캐릭터로 선택됩니다.</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
         return
 
-    image_url = selected_character.get("character_image")
-    if image_url:
-        st.image(image_url, width=84)
-    st.markdown(f"**{selected_character.get('character_name') or '이름 미확인'}**")
-    st.caption(
-        " · ".join(
-            [
-                str(selected_character.get("world_name") or "월드 미확인"),
-                str(selected_character.get("character_class") or "직업 미확인"),
-                f"Lv.{int(selected_character['character_level'])}" if pd.notna(selected_character.get("character_level")) else "Lv.?",
-            ]
-        )
+    image_url = str(selected_character.get("character_image") or "").strip()
+    avatar_html = (
+        f'<img src="{image_url}" alt="character image" class="maple-inline-avatar-img" />'
+        if image_url
+        else f'<span class="maple-inline-avatar-fallback">{str(selected_character.get("character_name") or "M")[:1]}</span>'
     )
+    guild_text = ""
     if selected_character.get("character_guild_name"):
-        st.caption(f"길드: {selected_character.get('character_guild_name')}")
+        guild_text = f" · 길드 {selected_character.get('character_guild_name')}"
+
+    level_value = selected_character.get("character_level")
+    level_text = f"Lv.{int(level_value)}" if pd.notna(level_value) else "Lv.?"
+    st.markdown(
+        f"""
+<div class="maple-inline-profile">
+  <div class="maple-inline-avatar">{avatar_html}</div>
+  <div class="maple-inline-profile-copy">
+    <div class="maple-inline-profile-title">분석 캐릭터</div>
+    <div class="maple-inline-profile-name">{selected_character.get("character_name") or "이름 미확인"}</div>
+    <div class="maple-inline-profile-body">
+      {selected_character.get("world_name") or "월드 미확인"} · {selected_character.get("character_class") or "직업 미확인"} · {level_text}{guild_text}
+    </div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 
-def _render_sidebar() -> dict[str, Any]:
+def _filter_columns_for_kind(kind: str) -> list[str]:
+    filter_columns = ["world_name", "item_name", "weekday_kr", "hour_band"]
+    if kind in {"cube", "potential"}:
+        filter_columns += ["cube_type", "before_potential_grade", "after_potential_grade"]
+    if kind == "starforce":
+        filter_columns += ["starforce_range", "transition_label"]
+    return filter_columns
+
+
+def _render_dataset_filters_panel(selected_character: dict[str, Any] | None) -> None:
+    with st.expander("세부 데이터 필터", expanded=False):
+        st.caption("불러온 기록 안에서 추가로 비교 대상을 좁힐 수 있습니다. 캐릭터를 바꾸면 필터 기준도 함께 다시 계산됩니다.")
+        datasets = [
+            ("cube", "큐브", st.session_state.get("cube_df", pd.DataFrame())),
+            ("potential", "잠재능력 재설정", st.session_state.get("potential_df", pd.DataFrame())),
+            ("starforce", "스타포스", st.session_state.get("starforce_df", pd.DataFrame())),
+        ]
+        for kind, label, source_df in datasets:
+            with st.expander(f"{label} 필터", expanded=False):
+                scoped_df = filter_records_by_selected_character(source_df.copy(), selected_character)
+                if scoped_df is None or scoped_df.empty:
+                    st.caption("현재 선택된 캐릭터 기준으로 필터링할 데이터가 없습니다.")
+                    continue
+                filter_columns = _filter_columns_for_kind(kind)
+                widget_cols = st.columns(2)
+                rendered = 0
+                for col in filter_columns:
+                    if col not in scoped_df.columns or not scoped_df[col].notna().any():
+                        continue
+                    options = sorted(scoped_df[col].dropna().astype(str).unique().tolist())
+                    target_col = widget_cols[rendered % 2]
+                    with target_col:
+                        st.multiselect(_filter_label(col), options, key=f"{kind}_{col}_filter")
+                    rendered += 1
+                if rendered == 0:
+                    st.caption("추가로 좁힐 수 있는 필터 항목이 없습니다.")
+
+
+def _render_main_controls() -> dict[str, Any]:
     env_api_key = get_env_api_key()
     login_guide = get_nexon_login_guide()
     default_start, default_end = get_default_two_year_range()
@@ -777,28 +845,50 @@ def _render_sidebar() -> dict[str, Any]:
 
     selected_character: dict[str, Any] | None = None
     inferred_main_stat: str | None = None
+    top_left, top_right = st.columns([1.5, 1], gap="large")
 
-    with st.sidebar:
-        st.header("데이터 불러오기")
-        theme_mode, resolved_theme_mode = render_theme_toggle()
-        st.session_state["resolved_theme_mode"] = resolved_theme_mode
-        auth_method = st.radio(
-            "인증 방식",
-            ["API Key 직접 입력", "넥슨 게임 데이터 활용 로그인"],
-            index=0,
-        )
-
-        api_key = ""
-        if auth_method == "API Key 직접 입력":
-            api_key = st.text_input(
-                "Nexon Open API Key",
-                value=env_api_key,
-                type="password",
-                help=".env의 NEXON_OPEN_API_KEY도 지원하지만 기본은 이 입력값입니다.",
+    with top_left:
+        with st.container(border=True):
+            render_section_header(
+                "데이터 불러오기",
+                "API Key 입력부터 캐릭터 선택, 전체 기록 조회까지 메인 화면에서 바로 진행할 수 있습니다.",
             )
-            with st.expander("Open API Key 발급 방법 / 사용법", expanded=False):
+            tone_col, auth_col = st.columns([0.38, 0.62], gap="large")
+            with tone_col:
+                theme_mode, resolved_theme_mode = render_theme_toggle()
+                st.session_state["resolved_theme_mode"] = resolved_theme_mode
                 st.markdown(
                     """
+<div class="maple-surface-note">
+  <div class="maple-surface-note-title">빠른 시작</div>
+  <ol>
+    <li>Open API Key를 입력합니다.</li>
+    <li>내 캐릭터 목록을 불러옵니다.</li>
+    <li>분석 캐릭터를 확인한 뒤 전체 기록을 조회합니다.</li>
+  </ol>
+</div>
+""",
+                    unsafe_allow_html=True,
+                )
+            with auth_col:
+                auth_method = st.radio(
+                    "인증 방식",
+                    ["API Key 직접 입력", "넥슨 게임 데이터 활용 로그인"],
+                    index=0,
+                    horizontal=True,
+                )
+
+                api_key = ""
+                if auth_method == "API Key 직접 입력":
+                    api_key = st.text_input(
+                        "Nexon Open API Key",
+                        value=env_api_key,
+                        type="password",
+                        help=".env의 NEXON_OPEN_API_KEY도 지원하지만 기본은 이 입력값입니다.",
+                    )
+                    with st.expander("Open API Key 발급 방법 / 사용법", expanded=False):
+                        st.markdown(
+                            """
 1. [넥슨 Open API 사전 준비하기](https://openapi.nexon.com/ko/guide/prepare-in-advance/)에서 넥슨 ID 로그인과 애플리케이션 등록 절차를 확인합니다.
 2. 로그인 후 **내 애플리케이션 > 애플리케이션 등록**에서 `메이플스토리`를 선택하고 앱을 등록합니다.
 3. 등록이 완료되면 **내 애플리케이션 > 애플리케이션 상세**에서 API Key를 확인할 수 있습니다.
@@ -809,155 +899,172 @@ def _render_sidebar() -> dict[str, Any]:
 - API 요청 시 Header 이름은 `x-nxopen-api-key` 입니다.
 - 개발 단계 API Key는 호출량이 제한될 수 있어, 긴 기간 조회에서는 시간이 더 걸릴 수 있습니다.
 """
-                )
-        else:
-            st.info(login_guide.message)
+                        )
+                else:
+                    st.info(login_guide.message)
 
-        st.subheader("캐릭터 선택")
-        load_characters_clicked = st.button("내 캐릭터 목록 불러오기", width="stretch")
-        if load_characters_clicked:
-            log_event("character_list_fetch_started", page_name="sidebar")
-            if auth_method != "API Key 직접 입력":
-                st.warning("현재는 API Key 직접 입력 방식에서만 캐릭터 목록을 불러올 수 있습니다.")
-                log_event("character_list_fetch_failed", page_name="sidebar", properties={"error_type": "unsupported_auth_method"})
-            elif not api_key.strip():
-                st.warning("API Key를 입력한 뒤 캐릭터 목록을 불러와 주세요.")
-                log_event("api_key_validation_failed", page_name="sidebar", properties={"reason": "missing_api_key"})
-            else:
-                try:
-                    characters_df = _sync_account_character_list(api_key)
-                    st.success(f"계정 캐릭터 {len(characters_df)}명을 불러왔습니다.")
-                    log_event(
-                        "character_list_fetch_success",
-                        page_name="sidebar",
-                        properties={"character_count": len(characters_df)},
-                    )
-                    log_event("api_key_validation_success", page_name="sidebar")
-                except Exception as exc:
-                    st.error(f"캐릭터 목록을 불러오지 못했습니다: {exc}")
-                    log_event(
-                        "character_list_fetch_failed",
-                        page_name="sidebar",
-                        properties={"error_type": type(exc).__name__},
-                    )
-                    log_error("character_list_fetch_failed", exc, page_name="sidebar")
+            action_cols = st.columns([0.34, 0.66], gap="medium")
+            with action_cols[0]:
+                load_characters_clicked = st.button("내 캐릭터 목록 불러오기", width="stretch")
+            with action_cols[1]:
+                st.markdown('<div class="maple-inline-hint">기본 분석 캐릭터는 계정 내 레벨이 가장 높은 캐릭터로 자동 선택됩니다.</div>', unsafe_allow_html=True)
 
-        with st.expander("캐릭터명 직접 입력 조회", expanded=False):
-            manual_character_name = st.text_input("캐릭터명", key="manual_character_name")
-            manual_sync_clicked = st.button("캐릭터명으로 추가", key="manual_character_sync", width="stretch")
-            if manual_sync_clicked:
-                if not api_key.strip():
-                    st.warning("API Key를 입력한 뒤 캐릭터명 조회를 실행해 주세요.")
-                    log_event("api_key_validation_failed", page_name="manual_character_lookup", properties={"reason": "missing_api_key"})
-                elif not manual_character_name.strip():
-                    st.warning("캐릭터명을 입력해 주세요.")
+            if load_characters_clicked:
+                log_event("character_list_fetch_started", page_name="control_panel")
+                if auth_method != "API Key 직접 입력":
+                    st.warning("현재는 API Key 직접 입력 방식에서만 캐릭터 목록을 불러올 수 있습니다.")
+                    log_event("character_list_fetch_failed", page_name="control_panel", properties={"error_type": "unsupported_auth_method"})
+                elif not api_key.strip():
+                    st.warning("API Key를 입력한 뒤 캐릭터 목록을 불러와 주세요.")
+                    log_event("api_key_validation_failed", page_name="control_panel", properties={"reason": "missing_api_key"})
                 else:
                     try:
-                        log_event("character_search_submitted", page_name="manual_character_lookup")
-                        _sync_character_from_name(api_key, manual_character_name)
-                        st.success("캐릭터 정보를 목록에 추가했습니다.")
-                        log_event("character_sync_success", page_name="manual_character_lookup")
+                        characters_df = _sync_account_character_list(api_key)
+                        st.success(f"계정 캐릭터 {len(characters_df)}명을 불러왔습니다.")
+                        log_event(
+                            "character_list_fetch_success",
+                            page_name="control_panel",
+                            properties={"character_count": len(characters_df)},
+                        )
+                        log_event("api_key_validation_success", page_name="control_panel")
                     except Exception as exc:
-                        st.error(f"캐릭터명 직접 조회에 실패했습니다: {exc}")
-                        log_event("character_sync_failed", page_name="manual_character_lookup", properties={"error_type": type(exc).__name__})
-                        log_error("character_sync_failed", exc, page_name="manual_character_lookup")
+                        st.error(f"캐릭터 목록을 불러오지 못했습니다: {exc}")
+                        log_event(
+                            "character_list_fetch_failed",
+                            page_name="control_panel",
+                            properties={"error_type": type(exc).__name__},
+                        )
+                        log_error("character_list_fetch_failed", exc, page_name="control_panel")
 
-        characters_df = st.session_state.get("characters_df", pd.DataFrame())
-        if isinstance(characters_df, pd.DataFrame) and not characters_df.empty:
-            selected_character = render_character_selector(characters_df)
-            selected_character = _get_selected_character_with_basic(api_key, selected_character)
-        st.session_state["selected_character_object"] = selected_character
-        if selected_character:
-            selected_key = str(selected_character.get("option_key") or selected_character.get("ocid") or selected_character.get("character_name") or "")
-            if st.session_state.get("_analytics_last_selected_character_key") != selected_key:
+            with st.expander("캐릭터명 직접 입력 조회", expanded=False):
+                manual_character_name = st.text_input("캐릭터명", key="manual_character_name")
+                manual_sync_clicked = st.button("캐릭터명으로 추가", key="manual_character_sync", width="stretch")
+                if manual_sync_clicked:
+                    if not api_key.strip():
+                        st.warning("API Key를 입력한 뒤 캐릭터명 조회를 실행해 주세요.")
+                        log_event("api_key_validation_failed", page_name="manual_character_lookup", properties={"reason": "missing_api_key"})
+                    elif not manual_character_name.strip():
+                        st.warning("캐릭터명을 입력해 주세요.")
+                    else:
+                        try:
+                            log_event("character_search_submitted", page_name="manual_character_lookup")
+                            _sync_character_from_name(api_key, manual_character_name)
+                            st.success("캐릭터 정보를 목록에 추가했습니다.")
+                            log_event("character_sync_success", page_name="manual_character_lookup")
+                        except Exception as exc:
+                            st.error(f"캐릭터명 직접 조회에 실패했습니다: {exc}")
+                            log_event("character_sync_failed", page_name="manual_character_lookup", properties={"error_type": type(exc).__name__})
+                            log_error("character_sync_failed", exc, page_name="manual_character_lookup")
+
+            characters_df = st.session_state.get("characters_df", pd.DataFrame())
+            if isinstance(characters_df, pd.DataFrame) and not characters_df.empty:
+                selected_character = render_character_selector(characters_df)
+                selected_character = _get_selected_character_with_basic(api_key, selected_character)
+            st.session_state["selected_character_object"] = selected_character
+            if selected_character:
+                selected_key = str(selected_character.get("option_key") or selected_character.get("ocid") or selected_character.get("character_name") or "")
+                if st.session_state.get("_analytics_last_selected_character_key") != selected_key:
+                    log_event(
+                        "character_selected",
+                        page_name="control_panel",
+                        properties={
+                            "character_class": selected_character.get("character_class"),
+                            "world_name": selected_character.get("world_name"),
+                            "character_level_bucket": _character_level_bucket(selected_character.get("character_level")),
+                        },
+                    )
+                    st.session_state["_analytics_last_selected_character_key"] = selected_key
+
+            available_start, available_end = get_default_two_year_range()
+            st.markdown(
+                f"""
+<div class="maple-inline-hint">
+  기본 조회 기간은 <strong>오늘 기준 최근 2년</strong>입니다. 현재 조회 가능 범위는 {available_start} ~ {available_end} 입니다.
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+            current_start = st.session_state.get("query_start_date", default_start)
+            current_end = st.session_state.get("query_end_date", default_end)
+            current_start = max(current_start, available_start)
+            current_end = min(current_end, available_end)
+            if current_start > current_end:
+                current_start, current_end = available_start, available_end
+
+            date_cols = st.columns(2, gap="medium")
+            with date_cols[0]:
+                start_date = st.date_input(
+                    "시작일",
+                    value=current_start,
+                    min_value=available_start,
+                    max_value=available_end,
+                    key="query_start_date",
+                )
+            with date_cols[1]:
+                end_date = st.date_input(
+                    "종료일",
+                    value=current_end,
+                    min_value=available_start,
+                    max_value=available_end,
+                    key="query_end_date",
+                )
+            auto_clamp = st.checkbox("기간 자동 보정 후 조회", value=True)
+            if (end_date - start_date).days + 1 > 730:
+                st.warning("기간이 길수록 API 호출이 오래 걸릴 수 있습니다.")
+            st.caption("전체 기록 불러오기는 잠재능력/큐브와 스타포스 데이터를 함께 조회합니다.")
+            load_clicked = st.button("전체 기록 불러오기", type="primary", width="stretch")
+
+    with top_right:
+        with st.container(border=True):
+            render_section_header(
+                "분석 설정",
+                "선택 캐릭터와 주요옵션 기준, TOP 조건 해석 기준을 한 곳에서 조정합니다.",
+            )
+            _render_selected_character_snapshot(selected_character)
+
+            st.checkbox("직업 기준 주요옵션 자동 설정", key="use_auto_major_option")
+            inferred_main_stat = update_major_options_on_character_change(selected_character)
+            if selected_character:
+                st.caption(f"직업: {selected_character.get('character_class') or '미확인'}")
+            if inferred_main_stat:
+                st.caption(f"자동 추론 주스탯: {inferred_main_stat}")
+            elif selected_character:
+                st.caption("직업별 주요옵션 기본값을 찾지 못해 직접 선택이 필요합니다.")
+
+            selected_stats = st.multiselect(
+                "주요옵션 기준",
+                STAT_OPTIONS,
+                key="selected_major_options",
+            )
+            current_major_signature = (
+                tuple(sorted(selected_stats)),
+                bool(st.session_state.get("use_auto_major_option", True)),
+                str(inferred_main_stat or ""),
+                str(selected_character.get("character_class") if selected_character else ""),
+            )
+            if st.session_state.get("_analytics_last_major_signature") != current_major_signature:
                 log_event(
-                    "character_selected",
-                    page_name="sidebar",
+                    "major_option_changed",
+                    page_name="control_panel",
                     properties={
-                        "character_class": selected_character.get("character_class"),
-                        "world_name": selected_character.get("world_name"),
-                        "character_level_bucket": _character_level_bucket(selected_character.get("character_level")),
+                        "auto_major_option_enabled": bool(st.session_state.get("use_auto_major_option", True)),
+                        "selected_option_count": len(selected_stats),
+                        "inferred_main_stat": inferred_main_stat,
+                        "character_class": selected_character.get("character_class") if selected_character else None,
                     },
                 )
-                st.session_state["_analytics_last_selected_character_key"] = selected_key
-        _render_sidebar_character_profile(selected_character)
+                st.session_state["_analytics_last_major_signature"] = current_major_signature
+            st.caption("주요옵션은 선택한 옵션이 1줄 이상, 유효옵션은 2줄 이상 나온 경우로 계산합니다.")
 
-        st.divider()
-        st.subheader("옵션 기준")
-        st.checkbox("직업 기준 주요옵션 자동 설정", key="use_auto_major_option")
-        inferred_main_stat = update_major_options_on_character_change(selected_character)
-        if selected_character:
-            st.caption(f"직업: {selected_character.get('character_class') or '미확인'}")
-        if inferred_main_stat:
-            st.caption(f"자동 추론 주스탯: {inferred_main_stat}")
-        elif selected_character:
-            st.caption("직업별 주요옵션 기본값을 찾지 못해 직접 선택이 필요합니다.")
+            st.markdown('<div class="maple-divider-space"></div>', unsafe_allow_html=True)
+            top_min_attempts = st.slider("TOP 조건 최소 시도 수", min_value=1, max_value=100, value=MIN_TOP_ATTEMPTS)
+            top_dedup_strength = st.selectbox("TOP 조건 중복 제거 강도", ["약함", "보통", "강함"], index=1)
+            top_score_basis = st.selectbox("TOP 조건 기준", ["전체 평균 대비", "보정률 기준"], index=1)
+            low_sample_display = st.radio("표본 부족 항목 그래프 표시", ["표시", "숨김"], index=0, horizontal=True)
+            show_raw_response = st.checkbox("원본 응답 보기", value=False)
 
-        selected_stats = st.multiselect(
-            "주요옵션 기준",
-            STAT_OPTIONS,
-            key="selected_major_options",
-        )
-        current_major_signature = (
-            tuple(sorted(selected_stats)),
-            bool(st.session_state.get("use_auto_major_option", True)),
-            str(inferred_main_stat or ""),
-            str(selected_character.get("character_class") if selected_character else ""),
-        )
-        if st.session_state.get("_analytics_last_major_signature") != current_major_signature:
-            log_event(
-                "major_option_changed",
-                page_name="sidebar",
-                properties={
-                    "auto_major_option_enabled": bool(st.session_state.get("use_auto_major_option", True)),
-                    "selected_option_count": len(selected_stats),
-                    "inferred_main_stat": inferred_main_stat,
-                    "character_class": selected_character.get("character_class") if selected_character else None,
-                },
-            )
-            st.session_state["_analytics_last_major_signature"] = current_major_signature
-        st.caption("주요옵션은 선택한 옵션이 1줄 이상, 유효옵션은 2줄 이상 나온 경우로 계산합니다.")
-
-        st.divider()
-        available_start, available_end = get_default_two_year_range()
-        st.caption("기본값은 오늘 기준 최근 2년입니다.")
-        st.caption(f"현재 조회 가능 기간: {available_start} ~ {available_end}")
-
-        current_start = st.session_state.get("query_start_date", default_start)
-        current_end = st.session_state.get("query_end_date", default_end)
-        current_start = max(current_start, available_start)
-        current_end = min(current_end, available_end)
-        if current_start > current_end:
-            current_start, current_end = available_start, available_end
-
-        start_date = st.date_input(
-            "시작일",
-            value=current_start,
-            min_value=available_start,
-            max_value=available_end,
-            key="query_start_date",
-        )
-        end_date = st.date_input(
-            "종료일",
-            value=current_end,
-            min_value=available_start,
-            max_value=available_end,
-            key="query_end_date",
-        )
-        auto_clamp = st.checkbox("기간 자동 보정 후 조회", value=True)
-        if (end_date - start_date).days + 1 > 730:
-            st.warning("기간이 길수록 API 호출이 오래 걸릴 수 있습니다.")
-        st.caption("전체 기록을 불러오는 중입니다. 기간이 길수록 시간이 걸릴 수 있습니다.")
-        load_clicked = st.button("전체 기록 불러오기", type="primary", width="stretch")
-
-        st.divider()
-        st.subheader("TOP 조건 설정")
-        top_min_attempts = st.slider("TOP 조건 최소 시도 수", min_value=1, max_value=100, value=MIN_TOP_ATTEMPTS)
-        top_dedup_strength = st.selectbox("TOP 조건 중복 제거 강도", ["약함", "보통", "강함"], index=1)
-        top_score_basis = st.selectbox("TOP 조건 기준", ["전체 평균 대비", "보정률 기준"], index=1)
-        low_sample_display = st.radio("표본 부족 항목 그래프 표시", ["표시", "숨김"], index=0)
-
-        show_raw_response = st.checkbox("원본 응답 보기", value=False)
+            _render_dataset_filters_panel(selected_character)
 
     _persist_app_state()
     return {
@@ -989,10 +1096,10 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
     if not controls["load_clicked"]:
         return
     if controls["auth_method"] != "API Key 직접 입력":
-        st.sidebar.warning("넥슨 게임 데이터 활용 로그인 방식은 추후 OAuth/동의 기반 연동으로 확장 예정입니다.")
+        st.warning("넥슨 게임 데이터 활용 로그인 방식은 추후 OAuth/동의 기반 연동으로 확장 예정입니다.")
         return
     if not controls["api_key"].strip():
-        st.sidebar.warning("API Key를 입력해 주세요.")
+        st.warning("API Key를 입력해 주세요.")
         log_event("api_key_validation_failed", page_name="data_fetch", properties={"reason": "missing_api_key"})
         return
 
@@ -1001,7 +1108,7 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
     date_range_days = (controls["end_date"] - controls["start_date"]).days + 1
     log_event(
         "data_fetch_started",
-        page_name="sidebar",
+        page_name="control_panel",
         properties={"target_type": "all", "date_range_days": date_range_days},
     )
 
@@ -1030,9 +1137,9 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
             if controls["auto_clamp"]:
                 start_date, end_date, messages = clamp_date_range(start_date, end_date, data_type)
                 for message in messages:
-                    st.sidebar.info(message)
+                    st.info(message)
             elif start_date > end_date:
-                st.sidebar.warning("시작일은 종료일보다 늦을 수 없습니다.")
+                st.warning("시작일은 종료일보다 늦을 수 없습니다.")
                 continue
 
             if start_date > end_date:
@@ -1042,7 +1149,7 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
 
         if not fetch_plans:
             loading_placeholder.empty()
-            st.sidebar.warning("조회할 수 있는 기간이 없습니다. 날짜 설정을 확인해 주세요.")
+            st.warning("조회할 수 있는 기간이 없습니다. 날짜 설정을 확인해 주세요.")
             return
 
         phase_placeholder.markdown("**2단계 · API 호출을 시작합니다**")
@@ -1066,11 +1173,11 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
                     )
                 except Exception as exc:
                     failed_types.append(data_type)
-                    st.sidebar.error(f"{labels[data_type]} 데이터를 불러오는 중 오류가 발생했습니다: {exc}")
+                    st.error(f"{labels[data_type]} 데이터를 불러오는 중 오류가 발생했습니다: {exc}")
                     detail_placeholder.caption(
                         f"{labels[data_type]} 데이터는 실패했지만, 다른 기록은 계속 불러오고 있습니다."
                     )
-                    log_error(f"{data_type}_fetch_failed", exc, page_name="sidebar")
+                    log_error(f"{data_type}_fetch_failed", exc, page_name="control_panel")
                 completed += 1
                 phase_placeholder.markdown(
                     f"**3단계 · 화면 분석용 데이터로 반영 중입니다**  \n{completed}/{len(fetch_plans)} 종류를 처리했습니다."
@@ -1087,7 +1194,7 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
         if success_types:
             log_event(
                 "data_fetch_success",
-                page_name="sidebar",
+                page_name="control_panel",
                 properties={
                     "target_type": ",".join(success_types),
                     "date_range_days": date_range_days,
@@ -1100,35 +1207,35 @@ def _handle_api_load(controls: dict[str, Any]) -> None:
                 f"전체 기록 불러오기가 완료되었습니다. 성공 {len(success_types)}종류, 실패 {len(failed_types)}종류, 총 {total_records:,}건을 반영했습니다."
             )
         if failed_types and success_types:
-            st.sidebar.warning("일부 기록만 불러왔습니다. 성공한 데이터 기준으로 분석을 계속합니다.")
+            st.warning("일부 기록만 불러왔습니다. 성공한 데이터 기준으로 분석을 계속합니다.")
         if not success_types:
             log_event(
                 "data_fetch_failed",
-                page_name="sidebar",
+                page_name="control_panel",
                 properties={"error_type": "all_fetch_failed", "target_type": "all"},
             )
             loading_placeholder.empty()
-            st.sidebar.error("전체 기록을 불러오지 못했습니다. 기간 또는 API 상태를 확인해 주세요.")
+            st.error("전체 기록을 불러오지 못했습니다. 기간 또는 API 상태를 확인해 주세요.")
     except (NexonAPIError, RuntimeError, ValueError) as exc:
         loading_placeholder.empty()
-        st.sidebar.error(str(exc))
+        st.error(str(exc))
         if "API Key" in str(exc):
             log_event("api_key_validation_failed", page_name="data_fetch", properties={"reason": type(exc).__name__})
         log_event(
             "data_fetch_failed",
-            page_name="sidebar",
+            page_name="control_panel",
             properties={"error_type": type(exc).__name__, "target_type": "all"},
         )
-        log_error("data_fetch_failed", exc, page_name="sidebar")
+        log_error("data_fetch_failed", exc, page_name="control_panel")
     except Exception as exc:
         loading_placeholder.empty()
-        st.sidebar.error(f"예상하지 못한 오류가 발생했습니다: {exc}")
+        st.error(f"예상하지 못한 오류가 발생했습니다: {exc}")
         log_event(
             "data_fetch_failed",
-            page_name="sidebar",
+            page_name="control_panel",
             properties={"error_type": type(exc).__name__, "target_type": "all"},
         )
-        log_error("data_fetch_failed", exc, page_name="sidebar")
+        log_error("data_fetch_failed", exc, page_name="control_panel")
 
 
 def _fetch_history_job(api_key: str, data_type: str, start_str: str, end_str: str) -> dict[str, Any]:
@@ -1169,15 +1276,15 @@ def _apply_loaded_history_result(result: dict[str, Any]) -> int:
     _persist_app_state()
 
     for message in loaded.messages:
-        st.sidebar.info(message)
+        st.info(message)
 
     if data_type == "starforce":
         if loaded.raw_records:
-            st.sidebar.success(f"스타포스 records 수: {len(loaded.raw_records):,}건")
+            st.success(f"스타포스 records 수: {len(loaded.raw_records):,}건")
         else:
-            st.sidebar.warning("조회된 스타포스 기록이 없습니다. 해당 기간에 기록이 없거나 확률 정보 반영 전일 수 있습니다.")
+            st.warning("조회된 스타포스 기록이 없습니다. 해당 기간에 기록이 없거나 확률 정보 반영 전일 수 있습니다.")
 
-    st.sidebar.success(f"{labels[data_type]} 데이터를 화면 분석용으로 불러왔습니다.")
+    st.success(f"{labels[data_type]} 데이터를 화면 분석용으로 불러왔습니다.")
     return len(loaded.raw_records)
 
 
@@ -1185,74 +1292,46 @@ def _build_context(controls: dict[str, Any]) -> dict[str, Any]:
     cube_df = _apply_filters(st.session_state["cube_df"], "cube")
     potential_df = _apply_filters(st.session_state["potential_df"], "potential")
     starforce_df = _add_label_columns(_apply_filters(st.session_state["starforce_df"], "starforce"))
-    cube_like_df = _combine_cube_like(cube_df, potential_df)
     effective_job_name = controls["job_name"] if controls.get("use_auto_major_option", True) else None
-    effective_df = _add_label_columns(add_effective_option_features(cube_like_df, effective_job_name, controls["selected_stats"]))
-
-    inferred_event_df = infer_event_rows_from_records(cube_df, potential_df, starforce_df)
-    combined_event_df = inferred_event_df.copy()
-    effective_df = attach_event_tags(effective_df, combined_event_df, "cube")
-    starforce_df = attach_event_tags(starforce_df, combined_event_df, "starforce")
-    cube_df = attach_event_tags(cube_df, combined_event_df, "cube")
-    potential_df = attach_event_tags(potential_df, combined_event_df, "potential")
-
-    cube_summary = summarize_effective_options(effective_df)
-    star_summary = summarize_starforce(starforce_df)
-    profile_info = _build_profile_info(
-        controls.get("selected_character"),
+    parsed_frames = _build_parsed_analysis_frames(
         cube_df,
         potential_df,
         starforce_df,
-        controls["job_name"],
+        effective_job_name,
+        tuple(controls["selected_stats"]),
     )
 
-    cube_by_day_of_month = _label_day_of_month(summarize_cube_by_day_of_month(effective_df))
-    cube_by_hour = summarize_cube_by_hour(effective_df)
-    cube_by_hour_band = summarize_cube_by_hour_band(effective_df)
-    cube_by_weekday = summarize_cube_by_weekday(effective_df)
-    cube_by_type = summarize_cube_by_type(effective_df)
+    selected_character = controls.get("selected_character")
+    selected_character_payload = None
+    if selected_character:
+        selected_character_payload = {
+            "character_name": selected_character.get("character_name"),
+            "world_name": selected_character.get("world_name"),
+            "character_class": selected_character.get("character_class"),
+            "character_level": selected_character.get("character_level"),
+            "character_image": selected_character.get("character_image"),
+            "character_guild_name": selected_character.get("character_guild_name"),
+        }
 
-    star_by_day_of_month = _label_day_of_month(summarize_starforce_by_day_of_month(starforce_df))
-    star_by_hour = summarize_starforce_by_hour(starforce_df)
-    star_by_hour_band = summarize_starforce_by_hour_band(starforce_df)
-    star_by_weekday = summarize_starforce_by_weekday(starforce_df)
-    star_by_range = summarize_starforce_by_range(starforce_df)
-    star_by_transition = summarize_starforce_by_transition(starforce_df)
-
-    cube_ref_df = load_reference_csv(POTENTIAL_REFERENCE_PATH)
-    star_ref_df = load_reference_csv(STARFORCE_REFERENCE_PATH)
-    success_probability_groups = build_success_probability_group(starforce_df, star_ref_df)
-    cube_event_compare = compare_event_periods(effective_df, "cube")
-    star_event_compare = compare_event_periods(starforce_df, "starforce")
+    statistics = _build_statistics_layer(
+        parsed_frames["cube_df"],
+        parsed_frames["potential_df"],
+        parsed_frames["effective_df"],
+        parsed_frames["starforce_df"],
+        controls["job_name"],
+        selected_character_payload,
+    )
 
     return {
         "controls": controls,
         "selected_character": controls.get("selected_character"),
-        "cube_df": cube_df,
-        "potential_df": potential_df,
-        "starforce_df": starforce_df,
-        "effective_df": effective_df,
-        "cube_summary": cube_summary,
-        "star_summary": star_summary,
-        "profile_info": profile_info,
-        "cube_by_day_of_month": cube_by_day_of_month,
-        "cube_by_hour": cube_by_hour,
-        "cube_by_hour_band": cube_by_hour_band,
-        "cube_by_weekday": cube_by_weekday,
-        "cube_by_type": cube_by_type,
-        "star_by_day_of_month": star_by_day_of_month,
-        "star_by_hour": star_by_hour,
-        "star_by_hour_band": star_by_hour_band,
-        "star_by_weekday": star_by_weekday,
-        "star_by_range": star_by_range,
-        "star_by_transition": star_by_transition,
-        "cube_ref_df": cube_ref_df,
-        "star_ref_df": star_ref_df,
-        "event_df": combined_event_df,
-        "inferred_event_df": inferred_event_df,
-        "cube_event_compare": cube_event_compare,
-        "star_event_compare": star_event_compare,
-        "success_probability_groups": success_probability_groups,
+        "cube_df": parsed_frames["cube_df"],
+        "potential_df": parsed_frames["potential_df"],
+        "starforce_df": parsed_frames["starforce_df"],
+        "effective_df": parsed_frames["effective_df"],
+        "event_df": parsed_frames["event_df"],
+        "inferred_event_df": parsed_frames["inferred_event_df"],
+        **statistics,
     }
 
 
@@ -1260,20 +1339,11 @@ def _apply_filters(df: pd.DataFrame, kind: str) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame() if df is None else df
     output = filter_records_by_selected_character(df.copy(), st.session_state.get("selected_character_object"))
-    label = {"cube": "큐브", "potential": "잠재능력 재설정", "starforce": "스타포스"}[kind]
-    with st.sidebar.expander(f"{label} 필터", expanded=False):
-        filter_columns = ["world_name", "item_name", "weekday_kr", "hour_band"]
-        if kind in {"cube", "potential"}:
-            filter_columns += ["cube_type", "before_potential_grade", "after_potential_grade"]
-        if kind == "starforce":
-            filter_columns += ["starforce_range", "transition_label"]
-        for col in filter_columns:
-            if col not in output.columns or not output[col].notna().any():
-                continue
-            options = sorted(output[col].dropna().astype(str).unique().tolist())
-            selected = st.multiselect(_filter_label(col), options, key=f"{kind}_{col}_filter")
-            if selected:
-                output = output[output[col].astype(str).isin(selected)]
+    for col in _filter_columns_for_kind(kind):
+        selected = st.session_state.get(f"{kind}_{col}_filter", [])
+        if not selected or col not in output.columns:
+            continue
+        output = output[output[col].astype(str).isin([str(value) for value in selected])]
     return output
 
 
@@ -1320,12 +1390,366 @@ def _add_label_columns(df: pd.DataFrame) -> pd.DataFrame:
     return output
 
 
+def _strip_non_analysis_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    drop_cols = [col for col in ["raw_payload"] if col in df.columns]
+    return df.drop(columns=drop_cols) if drop_cols else df.copy()
+
+
+@st.cache_data(show_spinner=False)
+def _build_parsed_analysis_frames(
+    cube_df: pd.DataFrame,
+    potential_df: pd.DataFrame,
+    starforce_df: pd.DataFrame,
+    effective_job_name: str | None,
+    selected_stats: tuple[str, ...],
+) -> dict[str, pd.DataFrame]:
+    cube_clean = _strip_non_analysis_columns(cube_df)
+    potential_clean = _strip_non_analysis_columns(potential_df)
+    starforce_clean = _strip_non_analysis_columns(starforce_df)
+
+    cube_like_df = _combine_cube_like(cube_clean, potential_clean)
+    effective_df = _add_label_columns(add_effective_option_features(cube_like_df, effective_job_name, list(selected_stats)))
+
+    inferred_event_df = infer_event_rows_from_records(cube_clean, potential_clean, starforce_clean)
+    combined_event_df = inferred_event_df.copy()
+    effective_df = attach_event_tags(effective_df, combined_event_df, "cube")
+    tagged_starforce_df = attach_event_tags(starforce_clean, combined_event_df, "starforce")
+    tagged_cube_df = attach_event_tags(cube_clean, combined_event_df, "cube")
+    tagged_potential_df = attach_event_tags(potential_clean, combined_event_df, "potential")
+
+    return {
+        "cube_df": tagged_cube_df,
+        "potential_df": tagged_potential_df,
+        "starforce_df": tagged_starforce_df,
+        "effective_df": effective_df,
+        "event_df": combined_event_df,
+        "inferred_event_df": inferred_event_df,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def _build_statistics_layer(
+    cube_df: pd.DataFrame,
+    potential_df: pd.DataFrame,
+    effective_df: pd.DataFrame,
+    starforce_df: pd.DataFrame,
+    job_name: str,
+    selected_character_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    cube_summary = summarize_effective_options(effective_df)
+    star_summary = summarize_starforce(starforce_df)
+    profile_info = _build_profile_info(
+        selected_character_payload,
+        cube_df,
+        potential_df,
+        starforce_df,
+        job_name,
+    )
+
+    cube_by_day_of_month = _label_day_of_month(summarize_cube_by_day_of_month(effective_df))
+    cube_by_hour = summarize_cube_by_hour(effective_df)
+    cube_by_hour_band = summarize_cube_by_hour_band(effective_df)
+    cube_by_weekday = summarize_cube_by_weekday(effective_df)
+    cube_by_type = summarize_cube_by_type(effective_df)
+
+    star_by_day_of_month = _label_day_of_month(summarize_starforce_by_day_of_month(starforce_df))
+    star_by_hour = summarize_starforce_by_hour(starforce_df)
+    star_by_hour_band = summarize_starforce_by_hour_band(starforce_df)
+    star_by_weekday = summarize_starforce_by_weekday(starforce_df)
+    star_by_range = summarize_starforce_by_range(starforce_df)
+    star_by_transition = summarize_starforce_by_transition(starforce_df)
+
+    cube_ref_df = load_reference_csv(POTENTIAL_REFERENCE_PATH)
+    star_ref_df = load_reference_csv(STARFORCE_REFERENCE_PATH)
+    success_probability_groups = build_success_probability_group(starforce_df, star_ref_df)
+    cube_event_compare = compare_event_periods(effective_df, "cube")
+    star_event_compare = compare_event_periods(starforce_df, "starforce")
+
+    return {
+        "cube_summary": cube_summary,
+        "star_summary": star_summary,
+        "profile_info": profile_info,
+        "cube_by_day_of_month": cube_by_day_of_month,
+        "cube_by_hour": cube_by_hour,
+        "cube_by_hour_band": cube_by_hour_band,
+        "cube_by_weekday": cube_by_weekday,
+        "cube_by_type": cube_by_type,
+        "star_by_day_of_month": star_by_day_of_month,
+        "star_by_hour": star_by_hour,
+        "star_by_hour_band": star_by_hour_band,
+        "star_by_weekday": star_by_weekday,
+        "star_by_range": star_by_range,
+        "star_by_transition": star_by_transition,
+        "cube_ref_df": cube_ref_df,
+        "star_ref_df": star_ref_df,
+        "cube_event_compare": cube_event_compare,
+        "star_event_compare": star_event_compare,
+        "success_probability_groups": success_probability_groups,
+    }
+
+
 def _render_profile_header(context: dict[str, Any]) -> None:
     profile = context["profile_info"]
     sync_time = st.session_state.get("last_sync_at")
     sync_text = sync_time.strftime("%Y-%m-%d %H:%M:%S") if isinstance(sync_time, datetime) else "없음"
     period_text = st.session_state.get("last_query_range") or "불러온 기간 없음"
     render_character_profile_card(context.get("selected_character"), profile, sync_text, period_text)
+
+
+def _render_empty_state(context: dict[str, Any]) -> None:
+    st.markdown(
+        """
+<div class="maple-card maple-story-card">
+  <div class="maple-card-kicker">아직 리포트가 준비되지 않았습니다</div>
+  <div class="maple-title-xl">먼저 캐릭터 목록과 전체 기록을 불러와 주세요.</div>
+  <div class="maple-text-secondary">분석 설정을 열고 API Key를 입력한 뒤 캐릭터를 선택하면, 종합 요약과 세부 분석 탭이 자동으로 채워집니다.</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def _first_condition_row(rows: pd.DataFrame) -> pd.Series | None:
+    if rows is None or rows.empty:
+        return None
+    return rows.iloc[0]
+
+
+def _condition_score(row: pd.Series | None) -> float:
+    if row is None:
+        return 0.0
+    value = pd.to_numeric(row.get("score"), errors="coerce")
+    return float(value) if pd.notna(value) else 0.0
+
+
+def _condition_label(row: pd.Series | None, fallback: str = "표본 기준 충족 항목 없음") -> str:
+    if row is None:
+        return fallback
+    return str(row.get("condition_label") or fallback)
+
+
+def _rate_text(row: pd.Series | None) -> str:
+    if row is None:
+        return "표본 부족"
+    return format_percent(row.get("actual_rate"))
+
+
+def _build_daily_recommendation(context: dict[str, Any]) -> dict[str, Any]:
+    today = get_today_kst()
+    weekday_label = WEEKDAY_ORDER[today.weekday()]
+    day_label = f"{today.day}일"
+
+    cube_hour = _first_condition_row(
+        _condition_rows_for_selected(context, "cube", ["hour_label"], "유효옵션 출현률", "good")
+    )
+    star_hour = _first_condition_row(
+        _condition_rows_for_selected(context, "starforce", ["hour_label"], "스타포스 성공률", "good")
+    )
+    cube_type = _first_condition_row(
+        _condition_rows_for_selected(context, "cube", ["cube_type"], "유효옵션 출현률", "good")
+    )
+    star_transition = _first_condition_row(
+        _condition_rows_for_selected(context, "starforce", ["starforce_transition"], "스타포스 성공률", "good")
+    )
+    avoid_star = _first_condition_row(
+        _condition_rows_for_selected(context, "starforce", ["hour_label"], "스타포스 파괴율", "bad")
+    )
+    avoid_cube = _first_condition_row(
+        _condition_rows_for_selected(context, "cube", ["hour_label"], "유효옵션 출현률", "bad")
+    )
+
+    cube_score = max(_condition_score(cube_hour), _condition_score(cube_type))
+    star_score = max(_condition_score(star_hour), _condition_score(star_transition))
+    combined_score = max(cube_score, 0) + max(star_score, 0)
+
+    if combined_score >= 0.24:
+        fortune_grade = "대길"
+        fortune_sentence = "오늘은 과거 기록상 눈에 띄는 흐름이 비교적 선명하게 관측됩니다."
+    elif combined_score >= 0.12:
+        fortune_grade = "중길"
+        fortune_sentence = "오늘은 특정 조건에서 참고할 만한 흐름이 관측됩니다."
+    elif combined_score > 0:
+        fortune_grade = "소길"
+        fortune_sentence = "오늘은 큰 신호보다는 작은 힌트 위주로 보는 편이 좋습니다."
+    else:
+        fortune_grade = "평운"
+        fortune_sentence = "오늘은 표본 기준을 만족하는 뚜렷한 흐름이 아직 많지 않습니다."
+
+    if star_score > cube_score * 1.15:
+        type_label = "스타포스"
+        type_reason = f"{_condition_label(star_transition, '전이 구간')} 기준 성공률이 {_rate_text(star_transition)}로 관측되었습니다."
+        evidence_target = "starforce"
+    elif cube_score > star_score * 1.15:
+        type_label = "큐브/잠재능력"
+        type_reason = f"{_condition_label(cube_type, '큐브 타입')} 기준 유효옵션 출현률이 {_rate_text(cube_type)}로 관측되었습니다."
+        evidence_target = "cube"
+    else:
+        type_label = "균형형"
+        type_reason = "큐브/잠재능력과 스타포스 중 한쪽으로만 강하게 치우친 흐름은 뚜렷하지 않습니다."
+        evidence_target = "starforce" if star_score >= cube_score else "cube"
+
+    avoid_row = avoid_star if avoid_star is not None else avoid_cube
+    avoid_metric = "스타포스 파괴율" if avoid_star is not None else "유효옵션 출현률"
+    avoid_reason = (
+        f"{_condition_label(avoid_row)}에서 {avoid_metric}이 {_rate_text(avoid_row)}로 관측되었습니다."
+        if avoid_row is not None
+        else "아쉬웠던 조건도 최소 표본 기준을 만족하는 항목이 아직 충분하지 않습니다."
+    )
+
+    return {
+        "date_label": today.strftime("%Y년 %m월 %d일"),
+        "weekday_label": weekday_label,
+        "day_label": day_label,
+        "fortune_grade": fortune_grade,
+        "fortune_sentence": fortune_sentence,
+        "type_label": type_label,
+        "type_reason": type_reason,
+        "cube_time": _condition_label(cube_hour),
+        "cube_time_rate": _rate_text(cube_hour),
+        "star_time": _condition_label(star_hour),
+        "star_time_rate": _rate_text(star_hour),
+        "avoid_label": _condition_label(avoid_row),
+        "avoid_reason": avoid_reason,
+        "cube_score": cube_score,
+        "star_score": star_score,
+        "evidence_target": evidence_target,
+    }
+
+
+def _render_daily_recommendation_section(daily: dict[str, Any]) -> None:
+    st.markdown(
+        f"""
+<div class="maple-card maple-daily-card">
+  <div class="maple-card-kicker">{daily['date_label']} · {daily['weekday_label']} · {daily['day_label']}</div>
+  <div class="maple-daily-title">오늘의 강화 운세: {daily['fortune_grade']}</div>
+  <div class="maple-text-secondary">{daily['fortune_sentence']} 이 추천은 기존 강화 로그 기반 참고용이며, 향후 결과를 보장하지 않습니다.</div>
+  <div class="maple-recommend-list">
+    <div class="maple-recommend-row">
+      <div class="maple-recommend-label">추천 시간대</div>
+      <div>
+        <div class="maple-recommend-title">큐브 {daily['cube_time']} · 스타포스 {daily['star_time']}</div>
+        <div class="maple-card-caption">큐브 유효옵션 출현률 {daily['cube_time_rate']}, 스타포스 성공률 {daily['star_time_rate']}로 관측된 시간 흐름입니다.</div>
+      </div>
+    </div>
+    <div class="maple-recommend-row">
+      <div class="maple-recommend-label">강화 타입</div>
+      <div>
+        <div class="maple-recommend-title">{daily['type_label']}</div>
+        <div class="maple-card-caption">{daily['type_reason']}</div>
+      </div>
+    </div>
+    <div class="maple-recommend-row">
+      <div class="maple-recommend-label">피해서 볼 흐름</div>
+      <div>
+        <div class="maple-recommend-title">{daily['avoid_label']}</div>
+        <div class="maple-card-caption">{daily['avoid_reason']}</div>
+      </div>
+    </div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_editorial_evidence_chart(context: dict[str, Any], daily: dict[str, Any]) -> None:
+    if daily.get("evidence_target") == "cube":
+        source = context.get("cube_by_hour", pd.DataFrame())
+        rate_col = "effective_option_rate"
+        highlight = str(daily.get("cube_time") or "")
+        title = "큐브/잠재능력 시간별 유효옵션 출현률"
+        caption = "오늘의 추천 문장을 뒷받침하는 시간별 흐름입니다. 강조된 막대만 먼저 보고, 나머지는 상세 탭에서 확인하세요."
+    else:
+        source = context.get("star_by_hour", pd.DataFrame())
+        rate_col = "success_rate"
+        highlight = str(daily.get("star_time") or "")
+        title = "스타포스 시간별 성공률"
+        caption = "오늘의 추천 문장을 뒷받침하는 시간별 흐름입니다. 강조된 막대만 먼저 보고, 나머지는 상세 탭에서 확인하세요."
+
+    fig = plot_editorial_hour_evidence(
+        source,
+        rate_col,
+        title,
+        highlight_label=highlight,
+        min_attempts=context["controls"]["top_min_attempts"],
+        show_low_sample=context["controls"]["show_low_sample"],
+    )
+    st.markdown(
+        f"""
+<div class="maple-section-header maple-evidence-header">
+  <h3>오늘의 근거 차트</h3>
+  <p>{caption}</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    st.plotly_chart(_strip_plotly_title(fig), width="stretch", key="daily_editorial_evidence_chart")
+
+
+def _render_report_hero(context: dict[str, Any]) -> None:
+    daily = _build_daily_recommendation(context)
+    cube_rows = _condition_rows_for_selected(
+        context,
+        target_type="cube",
+        grouping=["hour_label"],
+        metric_label="유효옵션 출현률",
+        direction="good",
+    )
+    star_rows = _condition_rows_for_selected(
+        context,
+        target_type="starforce",
+        grouping=["hour_label"],
+        metric_label="스타포스 성공률",
+        direction="good",
+    )
+
+    lead = "기준기간 내 과거 기록을 아직 충분히 모으지 못해 뚜렷한 패턴을 해석하기 어렵습니다."
+    story_lines: list[str] = []
+    if not cube_rows.empty:
+        best_cube = cube_rows.iloc[0]
+        story_lines.append(
+            f"{best_cube['condition_label']}에서 유효옵션 출현률이 {format_percent(best_cube['actual_rate'])}로 관측되었습니다."
+        )
+    if not star_rows.empty:
+        best_star = star_rows.iloc[0]
+        story_lines.append(
+            f"{best_star['condition_label']}에서 스타포스 성공률이 {format_percent(best_star['actual_rate'])}로 관측되었습니다."
+        )
+    if story_lines:
+        lead = " ".join(story_lines)
+
+    cube_summary = context["cube_summary"]
+    star_summary = context["star_summary"]
+    hero_metrics = [
+        {"label": "유효옵션 출현률", "value": format_percent(cube_summary["effective_rate"]), "subtitle": "주요옵션 2줄 이상", "variant": "accent"},
+        {"label": "스타포스 성공률", "value": format_percent(star_summary["success_rate"]), "subtitle": "강화 전체", "variant": "success"},
+        {"label": "스타포스 파괴율", "value": format_percent(_bool_rate(context["starforce_df"], "is_destroyed")), "subtitle": "낮을수록 안정적", "variant": "danger"},
+    ]
+
+    st.markdown(
+        f"""
+<div class="maple-card maple-story-hero">
+  <div class="maple-card-kicker">오늘의 운빨 요약</div>
+  <div class="maple-title-xl">{daily['fortune_grade']} · {daily['type_label']} 흐름을 먼저 읽어보세요.</div>
+  <div class="maple-text-secondary">{lead}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    _render_daily_recommendation_section(daily)
+    render_editorial_metric_strip(hero_metrics)
+    _render_editorial_evidence_chart(context, daily)
+    st.markdown(
+        """
+<div class="maple-card maple-story-card">
+  <div class="maple-card-kicker">리포트 읽는 순서</div>
+  <div class="maple-text-secondary">먼저 위 핵심 지표와 요약 문장을 보고, 아래 탭에서 일자별·시간별·요일별 세부 패턴과 조건 TOP 5를 차례대로 확인해 보세요.</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def _build_profile_info(
@@ -1428,6 +1852,7 @@ def render_metric_card_grid(metrics: list[dict[str, Any]], columns: int = 4) -> 
     if not metrics:
         return
     theme_mode = st.session_state.get("resolved_theme_mode", "light")
+    columns = max(1, min(columns, 2))
     column_sets = st.columns(columns)
     for idx, metric in enumerate(metrics):
         variant = metric.get("variant", "accent")
@@ -1453,12 +1878,54 @@ def render_metric_card_grid(metrics: list[dict[str, Any]], columns: int = 4) -> 
             )
 
 
+def render_editorial_metric_strip(metrics: list[dict[str, Any]]) -> None:
+    if not metrics:
+        return
+    rows = []
+    for metric in metrics:
+        rows.append(
+            f"""
+<div class="maple-strip-item">
+  <div class="maple-strip-label">{metric.get('label', '')}</div>
+  <div class="maple-strip-value">{metric.get('value', '-')}</div>
+  <div class="maple-strip-caption">{metric.get('subtitle', '')}</div>
+</div>
+"""
+        )
+    st.markdown(
+        f"""
+<div class="maple-card maple-metric-strip">
+  {''.join(rows)}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def render_chart_card(title: str, fig, *, key: str, description: str | None = None) -> None:
     with st.container(border=True):
-        st.markdown(f"**{title}**")
-        if description:
-            st.caption(description)
-        st.plotly_chart(fig, width="stretch", key=key)
+        render_inline_chart_title(title, description)
+        st.plotly_chart(_strip_plotly_title(fig), width="stretch", key=key)
+
+
+def _strip_plotly_title(fig):
+    try:
+        fig.update_layout(title_text="")
+    except Exception:
+        pass
+    return fig
+
+
+def render_inline_chart_title(title: str, description: str | None = None) -> None:
+    st.markdown(f'<div class="maple-chart-title">{title}</div>', unsafe_allow_html=True)
+    if description:
+        st.markdown(f'<div class="maple-chart-caption">{description}</div>', unsafe_allow_html=True)
+
+
+def render_plain_chart(title: str, fig, *, key: str, description: str | None = None) -> None:
+    with st.container(border=True):
+        render_inline_chart_title(title, description)
+        st.plotly_chart(_strip_plotly_title(fig), width="stretch", key=key)
 
 
 def _render_star_transition_summary_block(
@@ -1557,35 +2024,36 @@ def _render_star_transition_summary_block(
 
 def _render_overview_tab(context: dict[str, Any]) -> None:
     _log_tab_view_once("종합 요약")
-    render_section_header("종합 요약", "선택된 캐릭터의 최근 2년 기록을 기준으로 잠재능력/큐브와 스타포스 결과를 한눈에 정리합니다.")
+    render_section_header(
+        "종합 리딩",
+        "차트보다 먼저 읽는 요약입니다. 수치는 흐름을 이해하기 위한 최소한의 근거로만 남겼습니다.",
+    )
     cube_summary = context["cube_summary"]
     star_summary = context["star_summary"]
-    effective_df = context["effective_df"]
     starforce_df = context["starforce_df"]
+    cube_attempts = int(cube_summary.get("total_cube_uses", 0) or 0)
+    star_attempts = int(star_summary.get("total_attempts", 0) or 0)
 
-    render_metric_card_grid(
+    render_editorial_metric_strip(
         [
-            {"label": "큐브/잠재 총 시도 수", "value": f"{cube_summary['total_cube_uses']:,}회", "subtitle": "최근 2년 기준", "variant": "accent"},
-            {"label": "주요옵션 출현률", "value": format_percent(cube_summary["major_rate"]), "subtitle": "선택 주요옵션 1줄 이상", "variant": "success"},
-            {"label": "유효옵션 출현률", "value": format_percent(cube_summary["effective_rate"]), "subtitle": "선택 주요옵션 2줄 이상", "variant": "accent"},
-            {"label": "등급업률", "value": format_percent(_bool_rate(effective_df, "is_grade_up")), "subtitle": "큐브/잠재 전체", "variant": "warning"},
-            {"label": "스타포스 총 시도 수", "value": f"{star_summary['total_attempts']:,}회", "subtitle": "최근 2년 기준", "variant": "accent"},
-            {"label": "성공률", "value": format_percent(star_summary["success_rate"]), "subtitle": "스타포스 전체", "variant": "success"},
-            {"label": "파괴율", "value": format_percent(_bool_rate(starforce_df, "is_destroyed")), "subtitle": "스타포스 전체", "variant": "danger"},
-            {"label": "데이터 기준 기간", "value": st.session_state.get("last_query_range") or "없음", "subtitle": "마지막 불러오기 기준", "variant": "neutral"},
-        ],
-        columns=4,
+            {
+                "label": "큐브 흐름",
+                "value": format_percent(cube_summary["effective_rate"]),
+                "subtitle": f"유효옵션 출현률 · n={cube_attempts:,}",
+            },
+            {
+                "label": "스타포스 흐름",
+                "value": format_percent(star_summary["success_rate"]),
+                "subtitle": f"성공률 · n={star_attempts:,}",
+            },
+            {
+                "label": "주의 신호",
+                "value": format_percent(_bool_rate(starforce_df, "is_destroyed")),
+                "subtitle": "스타포스 파괴율",
+            },
+        ]
     )
-    with st.expander("보정률은 어떻게 계산되나요?", expanded=False):
-        st.markdown(
-            """
-- 실제률은 단순히 `성공 수 / 시도 수`로 계산합니다.
-- 시도 수가 적으면 1회 성공만으로도 100%처럼 보일 수 있어, 전체 평균을 prior로 섞은 보정률을 함께 봅니다.
-- 식: `adjusted_rate = (success_count + overall_rate × 30) / (attempts + 30)`
-- 시도 수가 많을수록 보정률은 실제률에 가까워지고, 시도 수가 적을수록 전체 평균에 가까워집니다.
-- 보정률은 미래 결과를 뜻하는 값이 아니라, 표본 수가 적은 조건의 과대평가를 줄이기 위한 참고 지표입니다.
-"""
-        )
+
     cube_rows = _condition_rows_for_selected(
         context,
         target_type="cube",
@@ -1606,18 +2074,41 @@ def _render_overview_tab(context: dict[str, Any]) -> None:
     if not star_rows.empty:
         insights.append(make_good_condition_text(star_rows.iloc[0]))
     if insights:
-        st.info(" ".join(insights[:2]) + " 이 분석은 과거 기록 기반 참고용이며, 향후 결과를 보장하지 않습니다.")
+        story_text = " ".join(insights[:2])
     else:
-        st.info("현재 표본 기준을 만족하는 조건이 많지 않아 특정 조건을 두드러지게 해석하기 어렵습니다. 표본 수가 적은 결과는 참고용으로만 해석해야 합니다.")
+        story_text = "현재 표본 기준을 만족하는 조건이 많지 않아 특정 조건을 두드러지게 해석하기 어렵습니다. 표본 수가 적은 결과는 참고용으로만 해석해야 합니다."
+    st.markdown(
+        f"""
+<div class="maple-card maple-overview-reading">
+  <div class="maple-card-kicker">짧은 해석</div>
+  <div class="maple-overview-text">{story_text}</div>
+  <div class="maple-card-caption">과거 기록 기반 참고용 통계이며, 향후 결과를 보장하지 않습니다.</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
-    left, right = st.columns(2)
-    with left:
-        render_section_header("잠재능력/큐브에서 유효옵션 출현률이 좋게 관측된 조건 TOP 5")
-        _render_condition_cards(cube_rows, tone="good")
-    with right:
-        render_section_header("스타포스에서 성공률이 좋게 관측된 조건 TOP 5")
-        _render_condition_cards(star_rows, tone="good")
-    st.caption("위 결과는 과거 기록 기반의 참고용 통계이며, 향후 결과를 보장하지 않습니다.")
+    with st.expander("과거 기록상 눈에 띈 조건 자세히 보기", expanded=False):
+        st.caption("처음 화면에서는 핵심 해석만 보여주고, 조건별 TOP 5는 필요할 때 펼쳐서 확인합니다.")
+        left, right = st.columns(2)
+        with left:
+            render_section_header("잠재능력/큐브", "유효옵션 출현률 기준으로 좋게 관측된 조건입니다.")
+            _render_condition_cards(cube_rows, tone="good")
+        with right:
+            render_section_header("스타포스", "성공률 기준으로 좋게 관측된 조건입니다.")
+            _render_condition_cards(star_rows, tone="good")
+        st.caption("위 결과는 과거 기록 기반의 참고용 통계이며, 향후 결과를 보장하지 않습니다.")
+
+    with st.expander("보정률은 어떻게 계산되나요?", expanded=False):
+        st.markdown(
+            """
+- 실제률은 단순히 `성공 수 / 시도 수`로 계산합니다.
+- 시도 수가 적으면 1회 성공만으로도 100%처럼 보일 수 있어, 전체 평균을 prior로 섞은 보정률을 함께 봅니다.
+- 식: `adjusted_rate = (success_count + overall_rate × 30) / (attempts + 30)`
+- 시도 수가 많을수록 보정률은 실제률에 가까워지고, 시도 수가 적을수록 전체 평균에 가까워집니다.
+- 보정률은 미래 결과를 뜻하는 값이 아니라, 표본 수가 적은 조건의 과대평가를 줄이기 위한 참고 지표입니다.
+"""
+        )
 
 
 def _render_day_of_month_tab(context: dict[str, Any]) -> None:
@@ -1875,7 +2366,8 @@ def _render_event_tab(context: dict[str, Any]) -> None:
             st.info("잠재능력/큐브 이벤트 비교에 사용할 데이터가 부족합니다.")
         else:
             st.dataframe(compare_df, width="stretch", hide_index=True)
-            st.plotly_chart(
+            render_plain_chart(
+                "이벤트 기간 vs 일반 기간 비교",
                 plot_multi_rate_bar(
                     compare_df,
                     "event_group",
@@ -1886,7 +2378,6 @@ def _render_event_tab(context: dict[str, Any]) -> None:
                     },
                     "이벤트 기간 vs 일반 기간 비교",
                 ),
-                width="stretch",
                 key="cube_event_compare_chart",
             )
     with star_tab:
@@ -1895,7 +2386,8 @@ def _render_event_tab(context: dict[str, Any]) -> None:
             st.info("스타포스 이벤트 비교에 사용할 데이터가 부족합니다.")
         else:
             st.dataframe(compare_df, width="stretch", hide_index=True)
-            st.plotly_chart(
+            render_plain_chart(
+                "이벤트 기간 vs 일반 기간 비교",
                 plot_multi_rate_bar(
                     compare_df,
                     "event_group",
@@ -1905,7 +2397,6 @@ def _render_event_tab(context: dict[str, Any]) -> None:
                     },
                     "이벤트 기간 vs 일반 기간 비교",
                 ),
-                width="stretch",
                 key="star_event_compare_chart",
             )
     st.caption("이벤트 정보는 API 제공 범위와 공지 파싱 정확도에 따라 누락되거나 부정확할 수 있습니다. 자동 추정 이벤트는 참고용으로만 사용하세요.")
@@ -1913,16 +2404,19 @@ def _render_event_tab(context: dict[str, Any]) -> None:
 
 def _render_raw_tab(context: dict[str, Any]) -> None:
     _log_tab_view_once("원본 데이터")
-    render_section_header("원본 데이터", "선택된 캐릭터 기준으로 필터링된 기록을 화면에서만 간단히 확인합니다.")
+    render_section_header(
+        "원본 데이터",
+        "원본 기록은 리포트 흐름을 방해하지 않도록 접어두었습니다. 필요한 경우에만 펼쳐서 확인합니다.",
+    )
     st.caption("원본 기록은 화면에서만 확인하며, 이번 버전에서는 분석 결과 다운로드를 제공하지 않습니다.")
-    st.markdown("**큐브 데이터**")
-    st.dataframe(context["cube_df"], width="stretch", hide_index=True)
-    st.markdown("**잠재능력 재설정 데이터**")
-    st.dataframe(context["potential_df"], width="stretch", hide_index=True)
-    st.markdown("**스타포스 데이터**")
-    st.dataframe(context["starforce_df"], width="stretch", hide_index=True)
-    st.markdown("**유효옵션 가공 데이터**")
-    st.dataframe(context["effective_df"], width="stretch", hide_index=True)
+    with st.expander(f"큐브 데이터 보기 · {len(context['cube_df']):,}건", expanded=False):
+        st.dataframe(context["cube_df"], width="stretch", hide_index=True)
+    with st.expander(f"잠재능력 재설정 데이터 보기 · {len(context['potential_df']):,}건", expanded=False):
+        st.dataframe(context["potential_df"], width="stretch", hide_index=True)
+    with st.expander(f"스타포스 데이터 보기 · {len(context['starforce_df']):,}건", expanded=False):
+        st.dataframe(context["starforce_df"], width="stretch", hide_index=True)
+    with st.expander(f"유효옵션 가공 데이터 보기 · {len(context['effective_df']):,}건", expanded=False):
+        st.dataframe(context["effective_df"], width="stretch", hide_index=True)
 
 
 def _render_debug_tab(context: dict[str, Any], controls: dict[str, Any]) -> None:
@@ -2049,12 +2543,14 @@ def _render_star_day_of_month_section(context: dict[str, Any]) -> None:
         plot_day_of_month_rate(context["star_by_day_of_month"], "success_rate", "일자별 성공률", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
         _bool_rate(df, "is_success"),
         "star_day_success_chart",
+        title="일자별 성공률",
     )
     _plot_with_baseline(
         cols[1],
         plot_day_of_month_rate(context["star_by_day_of_month"], "destroy_rate", "일자별 파괴율", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
         _bool_rate(df, "is_destroyed"),
         "star_day_destroy_chart",
+        title="일자별 파괴율",
     )
 
     day_mode = st.radio("일자별 스타포스 세부 보기", ["구간별", "전이 구간별"], horizontal=True, key="star_day_mode")
@@ -2065,7 +2561,8 @@ def _render_star_day_of_month_section(context: dict[str, Any]) -> None:
         "attempts",
     )
     if not range_day_df.empty:
-        st.plotly_chart(
+        render_plain_chart(
+            detail_title,
             plot_rate_heatmap(
                 range_day_df,
                 x_col="day_of_month_label",
@@ -2074,7 +2571,6 @@ def _render_star_day_of_month_section(context: dict[str, Any]) -> None:
                 title=detail_title,
                 x_order=DAY_OF_MONTH_ORDER,
             ),
-            width="stretch",
             key="star_day_range_heatmap",
         )
     else:
@@ -2216,12 +2712,14 @@ def _render_star_hour_section(context: dict[str, Any]) -> None:
         plot_hourly_rate(context["star_by_hour"], "success_rate", "시간별 성공률", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
         _bool_rate(df, "is_success"),
         "star_hour_success_chart",
+        title="시간별 성공률",
     )
     _plot_with_baseline(
         cols[1],
         plot_hourly_rate(context["star_by_hour"], "destroy_rate", "시간별 파괴율", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
         _bool_rate(df, "is_destroyed"),
         "star_hour_destroy_chart",
+        title="시간별 파괴율",
     )
 
     band_cols = st.columns(2)
@@ -2230,12 +2728,14 @@ def _render_star_hour_section(context: dict[str, Any]) -> None:
         plot_hour_band_rate(context["star_by_hour_band"], "success_rate", "시간대별 성공률", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
         _bool_rate(df, "is_success"),
         "star_timeblock_success_chart",
+        title="시간대별 성공률",
     )
     _plot_with_baseline(
         band_cols[1],
         plot_hour_band_rate(context["star_by_hour_band"], "destroy_rate", "시간대별 파괴율", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
         _bool_rate(df, "is_destroyed"),
         "star_timeblock_destroy_chart",
+        title="시간대별 파괴율",
     )
 
     analysis_mode = st.radio("시간별 스타포스 분석 단위", ["구간별", "전이 구간별", "공식 성공률 그룹별"], horizontal=True, key="star_hour_analysis_mode")
@@ -2245,7 +2745,8 @@ def _render_star_hour_section(context: dict[str, Any]) -> None:
             "attempts",
         )
         if not range_hour_df.empty:
-            st.plotly_chart(
+            render_plain_chart(
+                "시간별 스타포스 구간별 성공률",
                 plot_rate_heatmap(
                     range_hour_df,
                     x_col="hour_label",
@@ -2254,7 +2755,6 @@ def _render_star_hour_section(context: dict[str, Any]) -> None:
                     title="시간별 스타포스 구간별 성공률",
                     x_order=HOUR_LABEL_ORDER,
                 ),
-                width="stretch",
                 key="star_hour_range_heatmap",
             )
         else:
@@ -2268,7 +2768,8 @@ def _render_star_hour_section(context: dict[str, Any]) -> None:
             _render_star_transition_summary_block(context, df, key_prefix="star_hour")
             transition_hour_df["_transition_sort"] = transition_hour_df["starforce_transition"].map(parse_transition_start)
             transition_hour_df = transition_hour_df.sort_values(["_transition_sort", "starforce_transition", "hour_label"]).drop(columns="_transition_sort")
-            st.plotly_chart(
+            render_plain_chart(
+                "시간별 스타포스 전이 구간별 성공률",
                 plot_rate_heatmap(
                     transition_hour_df,
                     x_col="hour_label",
@@ -2277,7 +2778,6 @@ def _render_star_hour_section(context: dict[str, Any]) -> None:
                     title="시간별 스타포스 전이 구간별 성공률",
                     x_order=HOUR_LABEL_ORDER,
                 ),
-                width="stretch",
                 key="star_hour_transition_heatmap",
             )
         else:
@@ -2293,12 +2793,14 @@ def _render_star_hour_section(context: dict[str, Any]) -> None:
                 plot_item_rate(probability_df.rename(columns={"success_probability_group": "item_name"}), "success_rate", "공식 성공률 그룹별 성공률", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
                 _bool_rate(df, "is_success"),
                 "star_hour_probability_group_success_chart",
+                title="공식 성공률 그룹별 성공률",
             )
             _plot_with_baseline(
                 probability_cols[1],
                 plot_item_rate(probability_df.rename(columns={"success_probability_group": "item_name", "destruction_rate": "destroy_rate"}), "destroy_rate", "공식 성공률 그룹별 파괴율", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
                 _bool_rate(df, "is_destroyed"),
                 "star_hour_probability_group_destroy_chart",
+                title="공식 성공률 그룹별 파괴율",
             )
 
     st.caption("TOP 5와 결론 카드는 최소 시도 수 기준을 만족한 항목만 사용합니다. 기준 미만 항목은 그래프에서 연하게 표시됩니다.")
@@ -2390,7 +2892,7 @@ def _render_cube_weekday_section(context: dict[str, Any]) -> None:
                 add_average_line(fig, calculate_overall_metric_average(df, success_col), "전체 큐브 평균")
             elif average_mode == "큐브 타입별 평균":
                 add_average_line(fig, calculate_overall_metric_average(selected_cube_df, success_col), f"{selected_cube_type} 평균")
-            st.plotly_chart(fig, width="stretch", key="cube_selected_type_weekday_chart")
+            render_plain_chart(f"{selected_cube_type} 기준 요일별 {metric_label}", fig, key="cube_selected_type_weekday_chart")
         else:
             st.info("선택한 큐브 타입의 요일별 비교 데이터를 만들기 어렵습니다.")
     else:
@@ -2403,7 +2905,8 @@ def _render_cube_weekday_section(context: dict[str, Any]) -> None:
             "attempts",
         )
         if not cube_type_weekday.empty:
-            st.plotly_chart(
+            render_plain_chart(
+                f"큐브 타입 × 요일 {metric_label}",
                 plot_rate_heatmap(
                     cube_type_weekday,
                     x_col="weekday_kr",
@@ -2412,7 +2915,6 @@ def _render_cube_weekday_section(context: dict[str, Any]) -> None:
                     title=f"큐브 타입 × 요일 {metric_label}",
                     x_order=WEEKDAY_ORDER,
                 ),
-                width="stretch",
                 key="cube_type_weekday_heatmap",
             )
         else:
@@ -2438,7 +2940,7 @@ def _render_cube_weekday_section(context: dict[str, Any]) -> None:
         show_low_sample=context["controls"]["show_low_sample"],
     )
     add_vertical_average_line(cube_type_fig, overall_average, "전체 큐브 평균")
-    st.plotly_chart(cube_type_fig, width="stretch", key="cube_type_metric_chart")
+    render_plain_chart(f"큐브 타입별 {metric_label}", cube_type_fig, key="cube_type_metric_chart")
 
     st.caption("TOP 5와 결론 카드는 최소 시도 수 기준을 만족한 항목만 사용합니다. 기준 미만 항목은 그래프에서 연하게 표시됩니다.")
     st.caption("시도 수 10회 미만 항목은 표본 부족으로 연하게 표시됩니다.")
@@ -2484,12 +2986,14 @@ def _render_star_weekday_section(context: dict[str, Any]) -> None:
         plot_weekday_rate(context["star_by_weekday"], "success_rate", "요일별 성공률", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
         _bool_rate(df, "is_success"),
         "star_weekday_success_chart",
+        title="요일별 성공률",
     )
     _plot_with_baseline(
         cols[1],
         plot_weekday_rate(context["star_by_weekday"], "destroy_rate", "요일별 파괴율", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
         _bool_rate(df, "is_destroyed"),
         "star_weekday_destroy_chart",
+        title="요일별 파괴율",
     )
 
     analysis_mode = st.radio("스타포스 분석 단위", ["구간별", "전이 구간별", "공식 성공률 그룹별"], horizontal=True, key="star_analysis_mode")
@@ -2499,7 +3003,8 @@ def _render_star_weekday_section(context: dict[str, Any]) -> None:
             "attempts",
         )
         if not range_weekday_df.empty:
-            st.plotly_chart(
+            render_plain_chart(
+                "요일별 스타포스 구간별 성공률",
                 plot_rate_heatmap(
                     range_weekday_df,
                     x_col="weekday_kr",
@@ -2508,7 +3013,6 @@ def _render_star_weekday_section(context: dict[str, Any]) -> None:
                     title="요일별 스타포스 구간별 성공률",
                     x_order=WEEKDAY_ORDER,
                 ),
-                width="stretch",
                 key="star_weekday_range_heatmap",
             )
         else:
@@ -2525,7 +3029,8 @@ def _render_star_weekday_section(context: dict[str, Any]) -> None:
                 ["_transition_sort", "starforce_transition", "weekday_kr"],
                 na_position="last",
             ).drop(columns="_transition_sort")
-            st.plotly_chart(
+            render_plain_chart(
+                "요일별 스타포스 전이 구간별 성공률",
                 plot_rate_heatmap(
                     transition_weekday_df,
                     x_col="weekday_kr",
@@ -2534,7 +3039,6 @@ def _render_star_weekday_section(context: dict[str, Any]) -> None:
                     title="요일별 스타포스 전이 구간별 성공률",
                     x_order=WEEKDAY_ORDER,
                 ),
-                width="stretch",
                 key="star_weekday_transition_heatmap",
             )
         else:
@@ -2550,12 +3054,14 @@ def _render_star_weekday_section(context: dict[str, Any]) -> None:
                 plot_item_rate(probability_df.rename(columns={"success_probability_group": "item_name"}), "success_rate", "공식 성공률 그룹별 성공률", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
                 _bool_rate(df, "is_success"),
                 "star_probability_group_success_chart",
+                title="공식 성공률 그룹별 성공률",
             )
             _plot_with_baseline(
                 probability_cols[1],
                 plot_item_rate(probability_df.rename(columns={"success_probability_group": "item_name", "destruction_rate": "destroy_rate"}), "destroy_rate", "공식 성공률 그룹별 파괴율", min_attempts=context["controls"]["top_min_attempts"], show_low_sample=context["controls"]["show_low_sample"]),
                 _bool_rate(df, "is_destroyed"),
                 "star_probability_group_destroy_chart",
+                title="공식 성공률 그룹별 파괴율",
             )
             st.dataframe(probability_df, width="stretch", hide_index=True)
 
@@ -2593,7 +3099,8 @@ def _render_cube_condition_maps(context: dict[str, Any], metric_label: str, sour
     left, right = st.columns(2)
     with left:
         if not day_hour_df.empty:
-            st.plotly_chart(
+            render_plain_chart(
+                "일자 × 시간 관측 결과 맵",
                 plot_rate_heatmap(
                     day_hour_df,
                     x_col="hour_label",
@@ -2603,14 +3110,14 @@ def _render_cube_condition_maps(context: dict[str, Any], metric_label: str, sour
                     x_order=HOUR_LABEL_ORDER,
                     y_order=DAY_OF_MONTH_ORDER,
                 ),
-                width="stretch",
                 key="cube_day_hour_heatmap",
             )
         else:
             st.info("일자 × 시간 관측 결과 맵을 그릴 데이터가 부족합니다.")
     with right:
         if not weekday_hour_df.empty:
-            st.plotly_chart(
+            render_plain_chart(
+                "요일 × 시간 관측 결과 맵",
                 plot_rate_heatmap(
                     weekday_hour_df,
                     x_col="hour_label",
@@ -2620,7 +3127,6 @@ def _render_cube_condition_maps(context: dict[str, Any], metric_label: str, sour
                     x_order=HOUR_LABEL_ORDER,
                     y_order=WEEKDAY_ORDER,
                 ),
-                width="stretch",
                 key="cube_weekday_hour_heatmap",
             )
         else:
@@ -2648,7 +3154,8 @@ def _render_star_condition_maps(context: dict[str, Any], metric_label: str) -> N
     left, right = st.columns(2)
     with left:
         if not day_hour_df.empty:
-            st.plotly_chart(
+            render_plain_chart(
+                "일자 × 시간 관측 결과 맵",
                 plot_rate_heatmap(
                     day_hour_df,
                     x_col="hour_label",
@@ -2658,14 +3165,14 @@ def _render_star_condition_maps(context: dict[str, Any], metric_label: str) -> N
                     x_order=HOUR_LABEL_ORDER,
                     y_order=DAY_OF_MONTH_ORDER,
                 ),
-                width="stretch",
                 key="star_day_hour_heatmap",
             )
         else:
             st.info("일자 × 시간 관측 결과 맵을 그릴 데이터가 부족합니다.")
     with right:
         if not weekday_hour_df.empty:
-            st.plotly_chart(
+            render_plain_chart(
+                "요일 × 시간 관측 결과 맵",
                 plot_rate_heatmap(
                     weekday_hour_df,
                     x_col="hour_label",
@@ -2675,7 +3182,6 @@ def _render_star_condition_maps(context: dict[str, Any], metric_label: str) -> N
                     x_order=HOUR_LABEL_ORDER,
                     y_order=WEEKDAY_ORDER,
                 ),
-                width="stretch",
                 key="star_weekday_hour_heatmap",
             )
         else:
@@ -2710,9 +3216,9 @@ def _render_reference_rows(rows: pd.DataFrame, key: str) -> None:
         width="stretch",
         hide_index=True,
     )
-    st.plotly_chart(
+    render_plain_chart(
+        "기준 확률 대비 차이",
         plot_reference_gap_bar(rows, "condition_label", "reference_gap_p", "기준 확률 대비 차이"),
-        width="stretch",
         key=key,
     )
 
@@ -3060,8 +3566,7 @@ def add_average_line(fig, avg_value: float | None, label: str) -> None:
         y=avg_value * 100,
         line_dash="dot",
         line_color=line_color,
-        annotation_text=f"{label} {avg_value * 100:.1f}%",
-        annotation_position="top left",
+        annotation_text="",
     )
 
 
@@ -3085,15 +3590,28 @@ def add_vertical_average_line(
         x=avg_value * 100,
         line_dash="dot",
         line_color=line_color,
-        annotation_text=f"{label} {avg_value * 100:.1f}%",
-        annotation_position=annotation_position,
+        annotation_text="",
     )
 
 
-def _plot_with_baseline(container, fig, baseline_rate: float | None, key: str) -> None:
+def _plot_with_baseline(
+    container,
+    fig,
+    baseline_rate: float | None,
+    key: str,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+) -> None:
     if baseline_rate is not None:
         add_average_line(fig, baseline_rate, "전체 평균")
-    container.plotly_chart(fig, width="stretch", key=key)
+    with container:
+        with st.container(border=True):
+            if title:
+                st.markdown(f'<div class="maple-chart-title">{title}</div>', unsafe_allow_html=True)
+            if description:
+                st.markdown(f'<div class="maple-chart-caption">{description}</div>', unsafe_allow_html=True)
+            st.plotly_chart(_strip_plotly_title(fig), width="stretch", key=key)
 
 
 def render_badge(text: str, variant: str, theme_mode: str) -> str:
@@ -3221,109 +3739,6 @@ def _inject_style(theme_mode: str) -> None:
         color: var(--text-primary);
     }}
 
-    [data-testid="stAppViewContainer"],
-    .main,
-    .main > div {{
-        background: var(--page-bg) !important;
-    }}
-
-    header[data-testid="stHeader"],
-    [data-testid="stHeader"] {{
-        background: transparent !important;
-        border: 0 !important;
-        box-shadow: none !important;
-    }}
-
-    div[data-testid="stDecoration"],
-    [data-testid="stDecoration"],
-    div[data-testid="stStatusWidget"],
-    [data-testid="stStatusWidget"],
-    #MainMenu {{
-        display: none !important;
-    }}
-
-    div[data-testid="stToolbar"],
-    [data-testid="stToolbar"] {{
-        background: transparent !important;
-        box-shadow: none !important;
-        border: 0 !important;
-    }}
-
-    [data-testid="collapsedControl"],
-    [data-testid="stSidebarCollapsedControl"],
-    button[kind="header"][aria-label*="sidebar"],
-    button[kind="header"][title*="sidebar"],
-    button[kind="header"][aria-label*="Sidebar"],
-    button[kind="header"][title*="Sidebar"] {{
-        position: fixed !important;
-        top: 0.85rem !important;
-        left: 0.9rem !important;
-        z-index: 1002 !important;
-        width: 2.65rem !important;
-        height: 2.65rem !important;
-        border-radius: 999px !important;
-        border: 1px solid var(--border) !important;
-        background: var(--card-bg) !important;
-        color: var(--text-primary) !important;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18) !important;
-    }}
-
-    div[data-testid="stToolbar"] [data-testid="collapsedControl"],
-    div[data-testid="stToolbar"] [data-testid="stSidebarCollapsedControl"],
-    div[data-testid="stToolbar"] button[aria-label*="sidebar"],
-    div[data-testid="stToolbar"] button[title*="sidebar"],
-    div[data-testid="stToolbar"] button[aria-label*="Sidebar"],
-    div[data-testid="stToolbar"] button[title*="Sidebar"],
-    [data-testid="stToolbar"] [data-testid="collapsedControl"],
-    [data-testid="stToolbar"] [data-testid="stSidebarCollapsedControl"],
-    [data-testid="stToolbar"] button[aria-label*="sidebar"],
-    [data-testid="stToolbar"] button[title*="sidebar"],
-    [data-testid="stToolbar"] button[aria-label*="Sidebar"],
-    [data-testid="stToolbar"] button[title*="Sidebar"] {{
-        display: inline-flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-    }}
-
-    [data-testid="collapsedControl"]:hover,
-    [data-testid="stSidebarCollapsedControl"]:hover,
-    button[kind="header"][aria-label*="sidebar"]:hover,
-    button[kind="header"][title*="sidebar"]:hover,
-    button[kind="header"][aria-label*="Sidebar"]:hover,
-    button[kind="header"][title*="Sidebar"]:hover {{
-        background: var(--card-bg-soft) !important;
-        border-color: var(--accent) !important;
-    }}
-
-    div[data-testid="stToolbar"] button,
-    [data-testid="stToolbar"] button {{
-        background: transparent !important;
-        color: var(--text-primary) !important;
-        border: 0 !important;
-        box-shadow: none !important;
-    }}
-
-    div[data-testid="stToolbar"] button[title*="Deploy"],
-    div[data-testid="stToolbar"] button[aria-label*="Deploy"],
-    div[data-testid="stToolbar"] a[title*="Deploy"],
-    div[data-testid="stToolbar"] a[aria-label*="Deploy"],
-    div[data-testid="stToolbar"] [data-testid*="deploy"],
-    div[data-testid="stToolbar"] [data-testid*="Deploy"],
-    div[data-testid="stToolbar"] button[title*="Git"],
-    div[data-testid="stToolbar"] button[aria-label*="Git"],
-    div[data-testid="stToolbar"] a[title*="Git"],
-    div[data-testid="stToolbar"] a[aria-label*="Git"],
-    div[data-testid="stToolbar"] button[title*="Share"],
-    div[data-testid="stToolbar"] button[aria-label*="Share"],
-    div[data-testid="stToolbar"] a[title*="Share"],
-    div[data-testid="stToolbar"] a[aria-label*="Share"],
-    div[data-testid="stToolbar"] button[title*="share"],
-    div[data-testid="stToolbar"] button[aria-label*="share"],
-    div[data-testid="stToolbar"] a[title*="share"],
-    div[data-testid="stToolbar"] a[aria-label*="share"] {{
-        display: none !important;
-    }}
-
     .stApp,
     .stApp p,
     .stApp label,
@@ -3335,63 +3750,11 @@ def _inject_style(theme_mode: str) -> None:
     }}
 
     .block-container {{
-        padding-top: 1.8rem;
-        padding-bottom: 3.4rem;
-        padding-left: 3rem;
-        padding-right: 3rem;
-        max-width: 1320px;
-    }}
-
-    section[data-testid="stSidebar"] {{
-        background: var(--sidebar-bg) !important;
-        border-right: 1px solid var(--border);
-    }}
-
-    section[data-testid="stSidebar"] * {{
-        color: var(--text-primary) !important;
-    }}
-
-    section[data-testid="stSidebar"] .stButton button {{
-        min-height: 44px !important;
-    }}
-
-    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
-    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3 {{
-        margin-top: 0.9rem !important;
-        margin-bottom: 0.6rem !important;
-    }}
-
-    section[data-testid="stSidebar"] .stCaption {{
-        line-height: 1.5 !important;
-    }}
-
-    section[data-testid="stSidebar"] hr {{
-        margin: 1.2rem 0 !important;
-        border-color: var(--border) !important;
-    }}
-
-    div[data-testid="stMetric"],
-    div[data-testid="stExpander"],
-    div[data-testid="stAlert"],
-    div[data-testid="stDataFrame"],
-    div[data-testid="stForm"],
-    div[data-testid="stVerticalBlockBorderWrapper"] {{
-        border: 1px solid var(--border) !important;
-        border-radius: 20px !important;
-        background: var(--metric-bg) !important;
-    }}
-
-    div[data-testid="stTabs"] {{
-        border: none !important;
-        background: transparent !important;
-        border-radius: 0 !important;
-        padding: 0 !important;
-        margin-bottom: 1.5rem !important;
-    }}
-
-    [data-testid="stMetric"] {{
-        padding: 18px 20px;
-        min-height: 168px;
+        padding-top: 2.2rem;
+        padding-bottom: 4rem;
+        padding-left: 2.4rem;
+        padding-right: 2.4rem;
+        max-width: 1160px;
     }}
 
     div[data-baseweb="select"] > div,
@@ -3421,7 +3784,7 @@ def _inject_style(theme_mode: str) -> None:
         background: var(--accent) !important;
         color: #F8FAFC !important;
         border: 1px solid var(--accent) !important;
-        border-radius: 12px !important;
+        border-radius: 8px !important;
     }}
 
     button[kind]:hover,
@@ -3431,16 +3794,34 @@ def _inject_style(theme_mode: str) -> None:
         border-color: var(--accent-hover) !important;
     }}
 
-    .stTabs [data-baseweb="tab-list"],
-    div[data-testid="stTabs"] [role="tablist"] {{
+    .stExpander {{
+        margin: 1.6rem 0 2rem 0;
+    }}
+
+    .stExpander > details {{
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--card-bg-soft);
+    }}
+
+    .stExpander > details > summary {{
+        padding: 1rem 1.1rem;
+        font-weight: 700;
+        color: var(--text-primary);
+    }}
+
+    .stTabs {{
+        margin-top: 2rem;
+    }}
+
+    .stTabs [role="tablist"] {{
         gap: 12px;
-        margin-bottom: 1.35rem;
+        margin-bottom: 1.4rem;
         flex-wrap: wrap;
         padding: 0.15rem 0 0.4rem 0;
     }}
 
-    .stTabs [data-baseweb="tab"],
-    div[data-testid="stTabs"] button[data-baseweb="tab"] {{
+    .stTabs [role="tab"] {{
         background: var(--card-bg-soft);
         border: 1px solid var(--border);
         border-radius: 999px;
@@ -3451,47 +3832,52 @@ def _inject_style(theme_mode: str) -> None:
         transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
     }}
 
-    .stTabs [data-baseweb="tab"]:hover,
-    div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {{
+    .stTabs [role="tab"]:hover {{
         background: var(--card-bg);
         border-color: var(--border-soft);
         color: var(--text-primary);
         transform: translateY(-1px);
     }}
 
-    .stTabs [aria-selected="true"],
-    div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {{
+    .stTabs [role="tab"][aria-selected="true"] {{
         background: var(--accent) !important;
         color: #FFFFFF !important;
         border-color: var(--accent) !important;
-        box-shadow: 0 10px 22px rgba(37, 99, 235, 0.22) !important;
+        box-shadow: 0 10px 22px rgba(249, 115, 22, 0.24) !important;
     }}
 
-    .stTabs [data-baseweb="tab"]::after,
-    .stTabs [data-baseweb="tab"]::before,
-    div[data-testid="stTabs"] button[data-baseweb="tab"]::after,
-    div[data-testid="stTabs"] button[data-baseweb="tab"]::before,
-    [data-testid="stTabs"] [data-baseweb="tab-highlight"],
-    [data-testid="stTabs"] [role="tablist"] + div {{
+    .stTabs [role="tab"]::after,
+    .stTabs [role="tab"]::before {{
         display: none !important;
-        background: transparent !important;
-        border: 0 !important;
-        height: 0 !important;
-        box-shadow: none !important;
     }}
 
     .maple-card {{
-        border: 1px solid var(--border-soft);
-        border-radius: 24px;
-        padding: 26px 30px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 24px 26px;
         background: var(--card-bg);
-        box-shadow: 0 10px 26px rgba(15, 23, 42, 0.10);
-        margin-bottom: 26px;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+        margin-bottom: 24px;
+    }}
+
+    .maple-chart-title {{
+        margin: 0.45rem 0 0.45rem 0;
+        color: var(--text-primary);
+        font-size: 1.05rem;
+        font-weight: 800;
+        line-height: 1.35;
+    }}
+
+    .maple-chart-caption {{
+        margin: -0.1rem 0 0.75rem 0;
+        color: var(--text-muted);
+        font-size: 0.9rem;
+        line-height: 1.5;
     }}
 
     .maple-metric-card {{
         position: relative;
-        min-height: 168px;
+        min-height: 154px;
         background:
             linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0) 100%),
             var(--card-bg);
@@ -3535,18 +3921,18 @@ def _inject_style(theme_mode: str) -> None:
         font-size: 42px;
         line-height: 1.05;
         font-weight: 800;
-        letter-spacing: -0.03em;
+        letter-spacing: 0;
         color: var(--text-primary);
         word-break: keep-all;
     }}
 
     .maple-profile-card {{
-        margin-bottom: 26px;
+        margin-bottom: 22px;
     }}
 
     .maple-profile-hero {{
         border-top: 3px solid var(--accent);
-        padding: 30px 34px;
+        padding: 28px 30px;
     }}
 
     .maple-profile-layout {{
@@ -3562,7 +3948,7 @@ def _inject_style(theme_mode: str) -> None:
     .maple-profile-avatar {{
         width: 190px;
         height: 190px;
-        border-radius: 34px;
+        border-radius: 8px;
         background: radial-gradient(circle at 50% 28%, rgba(96, 165, 250, 0.92) 0%, rgba(30, 41, 59, 0.96) 72%);
         color: #F8FAFC;
         display: flex;
@@ -3598,17 +3984,55 @@ def _inject_style(theme_mode: str) -> None:
     }}
 
     .maple-title-lg {{
-        font-size: 40px;
-        font-weight: 700;
+        font-size: 38px;
+        font-weight: 800;
         color: var(--text-primary);
         line-height: 1.1;
     }}
 
     .maple-title-xl {{
-        font-size: 26px;
+        font-size: 28px;
         font-weight: 800;
         margin-top: 6px;
         color: var(--text-primary);
+    }}
+
+    .maple-landing-hero {{
+        margin: 0 0 1.6rem 0;
+        padding: 0.6rem 0 0.4rem 0;
+    }}
+
+    .maple-landing-hero h1 {{
+        margin: 0;
+        font-size: clamp(2.8rem, 4vw, 4.8rem);
+        line-height: 0.98;
+        letter-spacing: 0;
+        color: var(--text-primary);
+    }}
+
+    .maple-landing-kicker {{
+        margin-bottom: 0.75rem;
+        color: var(--accent);
+        font-size: 0.9rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }}
+
+    .maple-landing-copy {{
+        max-width: 780px;
+        margin: 1rem 0 0 0;
+        font-size: 1.1rem;
+        line-height: 1.65;
+        color: var(--text-primary);
+    }}
+
+    .maple-landing-subcopy {{
+        max-width: 720px;
+        margin: 0.8rem 0 0 0;
+        font-size: 0.96rem;
+        line-height: 1.7;
+        color: var(--text-muted);
     }}
 
     .maple-card-kicker {{
@@ -3633,7 +4057,7 @@ def _inject_style(theme_mode: str) -> None:
 
     .maple-rank-rate,
     .maple-hero-rate {{
-        font-size: 34px;
+        font-size: 32px;
         font-weight: 800;
         color: var(--accent);
         margin-top: 12px;
@@ -3739,7 +4163,7 @@ def _inject_style(theme_mode: str) -> None:
     .maple-text-secondary {{
         font-size: 15px;
         color: var(--text-secondary);
-        line-height: 1.55;
+        line-height: 1.7;
     }}
 
     .maple-text-muted {{
@@ -3747,14 +4171,225 @@ def _inject_style(theme_mode: str) -> None:
         color: var(--text-muted);
     }}
 
-    [data-testid="stExpander"] {{
-        padding: 8px 14px !important;
-        margin-bottom: 20px !important;
+    .maple-surface-note {{
+        padding: 18px 18px 16px 18px;
+        border-radius: 8px;
+        background: linear-gradient(180deg, rgba(249, 115, 22, 0.12) 0%, rgba(249, 115, 22, 0.04) 100%), var(--card-bg-soft);
+        border: 1px solid var(--border);
     }}
 
-    [data-testid="stVerticalBlockBorderWrapper"] {{
-        padding: 8px 10px !important;
-        margin-bottom: 22px !important;
+    .maple-surface-note-title {{
+        font-size: 14px;
+        font-weight: 800;
+        color: var(--text-primary);
+        margin-bottom: 10px;
+    }}
+
+    .maple-surface-note ol {{
+        margin: 0;
+        padding-left: 1.1rem;
+        color: var(--text-secondary);
+        line-height: 1.7;
+        font-size: 0.95rem;
+    }}
+
+    .maple-inline-hint {{
+        display: flex;
+        align-items: center;
+        min-height: 44px;
+        padding: 10px 14px;
+        border-radius: 8px;
+        background: var(--card-bg-soft);
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+        font-size: 13px;
+        line-height: 1.5;
+    }}
+
+    .maple-inline-profile {{
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 16px;
+        border-radius: 8px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0) 100%), var(--card-bg-soft);
+        border: 1px solid var(--border);
+        margin-bottom: 14px;
+    }}
+
+    .maple-inline-profile-empty {{
+        display: block;
+    }}
+
+    .maple-inline-avatar {{
+        width: 72px;
+        height: 72px;
+        flex-shrink: 0;
+        border-radius: 8px;
+        background: radial-gradient(circle at 50% 28%, rgba(96, 165, 250, 0.92) 0%, rgba(30, 41, 59, 0.96) 72%);
+        border: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+    }}
+
+    .maple-inline-avatar-img {{
+        width: 68px;
+        height: 68px;
+        max-width: 68px;
+        max-height: 68px;
+        object-fit: contain;
+        transform: translateY(4%);
+    }}
+
+    .maple-inline-avatar-fallback {{
+        font-size: 28px;
+        font-weight: 800;
+        color: #FFFFFF;
+    }}
+
+    .maple-inline-profile-copy {{
+        min-width: 0;
+    }}
+
+    .maple-inline-profile-title {{
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--text-muted);
+        margin-bottom: 4px;
+    }}
+
+    .maple-inline-profile-name {{
+        font-size: 20px;
+        line-height: 1.2;
+        font-weight: 800;
+        color: var(--text-primary);
+        margin-bottom: 4px;
+    }}
+
+    .maple-inline-profile-body {{
+        font-size: 13px;
+        line-height: 1.55;
+        color: var(--text-secondary);
+    }}
+
+    .maple-divider-space {{
+        height: 6px;
+    }}
+
+    .maple-story-hero {{
+        border-left: 4px solid var(--accent);
+        background: linear-gradient(180deg, rgba(249, 115, 22, 0.08) 0%, rgba(249, 115, 22, 0.02) 100%), var(--card-bg);
+    }}
+
+    .maple-story-card {{
+        background: var(--card-bg-soft);
+    }}
+
+    .maple-overview-reading {{
+        padding: 34px 38px;
+        background:
+            linear-gradient(180deg, rgba(249, 115, 22, 0.055) 0%, rgba(249, 115, 22, 0.015) 100%),
+            var(--card-bg);
+        border-left: 4px solid var(--accent);
+    }}
+
+    .maple-overview-text {{
+        max-width: 980px;
+        color: var(--text-primary);
+        font-size: clamp(1.15rem, 1.8vw, 1.55rem);
+        line-height: 1.75;
+        font-weight: 600;
+    }}
+
+    .maple-daily-card {{
+        padding-top: 34px;
+        padding-bottom: 34px;
+        background:
+            linear-gradient(180deg, rgba(249, 115, 22, 0.10) 0%, rgba(249, 115, 22, 0.02) 100%),
+            var(--card-bg);
+    }}
+
+    .maple-daily-title {{
+        margin: 0.35rem 0 0.85rem 0;
+        font-size: clamp(2.2rem, 4vw, 4.4rem);
+        line-height: 1.02;
+        font-weight: 800;
+        color: var(--text-primary);
+    }}
+
+    .maple-recommend-list {{
+        margin-top: 28px;
+        border-top: 1px solid var(--border);
+    }}
+
+    .maple-recommend-row {{
+        display: grid;
+        grid-template-columns: minmax(120px, 0.28fr) 1fr;
+        gap: 22px;
+        padding: 20px 0;
+        border-bottom: 1px solid var(--border-soft);
+    }}
+
+    .maple-recommend-label {{
+        color: var(--text-muted);
+        font-size: 13px;
+        font-weight: 800;
+    }}
+
+    .maple-recommend-title {{
+        color: var(--text-primary);
+        font-size: clamp(1.35rem, 2vw, 2rem);
+        line-height: 1.2;
+        font-weight: 800;
+    }}
+
+    .maple-metric-strip {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0;
+        padding: 0;
+        overflow: hidden;
+    }}
+
+    .maple-strip-item {{
+        padding: 24px 26px;
+        border-right: 1px solid var(--border-soft);
+    }}
+
+    .maple-strip-item:last-child {{
+        border-right: 0;
+    }}
+
+    .maple-strip-label {{
+        color: var(--text-secondary);
+        font-size: 13px;
+        font-weight: 800;
+        margin-bottom: 16px;
+    }}
+
+    .maple-strip-value {{
+        color: var(--text-primary);
+        font-size: clamp(2.1rem, 4vw, 4rem);
+        line-height: 1;
+        font-weight: 800;
+    }}
+
+    .maple-strip-caption {{
+        color: var(--text-muted);
+        font-size: 13px;
+        margin-top: 14px;
+        line-height: 1.45;
+    }}
+
+    .maple-evidence-header {{
+        margin-top: 2.8rem;
+        margin-bottom: 0.4rem;
+    }}
+
+    .stAlert {{
+        border-radius: 8px;
     }}
 
     .stColumn {{
@@ -3763,20 +4398,46 @@ def _inject_style(theme_mode: str) -> None:
 
     @media (max-width: 960px) {{
         .block-container {{
-            padding-left: 1.2rem !important;
-            padding-right: 1.2rem !important;
-            padding-top: 1.1rem !important;
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+            padding-top: 1.2rem !important;
         }}
 
         .maple-card,
         .maple-profile-hero {{
-            padding: 20px 20px !important;
+            padding: 18px 18px !important;
         }}
 
         .maple-profile-layout {{
             flex-direction: column;
             align-items: flex-start;
             gap: 18px;
+        }}
+
+        .maple-landing-hero h1 {{
+            font-size: 2.5rem;
+        }}
+
+        .maple-inline-profile {{
+            padding: 14px;
+        }}
+
+        .maple-recommend-row {{
+            grid-template-columns: 1fr;
+            gap: 8px;
+        }}
+
+        .maple-metric-strip {{
+            grid-template-columns: 1fr;
+        }}
+
+        .maple-strip-item {{
+            border-right: 0;
+            border-bottom: 1px solid var(--border-soft);
+        }}
+
+        .maple-strip-item:last-child {{
+            border-bottom: 0;
         }}
 
         .maple-profile-avatar {{
@@ -3796,12 +4457,6 @@ def _inject_style(theme_mode: str) -> None:
         }}
     }}
 
-    [data-testid="stDataFrame"] *,
-    [data-testid="stDataFrame"] table,
-    [data-testid="stDataFrame"] th,
-    [data-testid="stDataFrame"] td {{
-        color: var(--text-primary) !important;
-    }}
 </style>
 """,
         unsafe_allow_html=True,
